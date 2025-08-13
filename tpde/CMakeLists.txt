@@ -33,13 +33,15 @@ if (((TPDE_LOGGING STREQUAL "DebugOnly") AND (CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif ()
 
 target_sources(tpde PRIVATE
-    src/Assembler.cpp
-    src/AssemblerElf.cpp
     src/base.cpp
     src/ElfMapper.cpp
     src/StringTable.cpp
     src/ValueAssignment.cpp
     src/util/SmallVector.cpp
+
+    PUBLIC
+    src/Assembler.cpp
+    src/AssemblerElf.cpp
 
     PUBLIC
     FILE_SET HEADERS
