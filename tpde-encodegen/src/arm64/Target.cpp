@@ -331,9 +331,12 @@ void EncodingTargetArm64::get_inst_candidates(
   };
   case_mem_unsigned("LDRBBui", "LDRBu", "LDURB", 0);
   case_mem_unsigned("LDRSBWui", "LDRSBwu", "LDURSBw", 0);
+  case_mem_unsigned("LDRSBXui", "LDRSBxu", "LDURSBx", 0);
   case_mem_unsigned("LDRHHui", "LDRHu", "LDURH", 1);
   case_mem_unsigned("LDRSHWui", "LDRSHwu", "LDURSHw", 0);
+  case_mem_unsigned("LDRSHXui", "LDRSHxu", "LDURSHx", 0);
   case_mem_unsigned("LDRWui", "LDRwu", "LDURw", 2);
+  case_mem_unsigned("LDRSWui", "LDRSWxu", "LDURSWxu", 0);
   case_mem_unsigned("LDRXui", "LDRxu", "LDURx", 3);
   case_mem_unsigned("PRFMui", "PRFMu", "PRFUMu", 3);
   case_mem_unsigned("LDRBui", "LDRbu", "LDURb", 0);
@@ -1039,6 +1042,8 @@ void EncodingTargetArm64::get_inst_candidates(
   case_default("STLRH", "STLRH");
   case_default("STLRW", "STLRw");
   case_default("STLRX", "STLRx");
+
+  case_default("BRK", "BRK");
 
   if (candidates.empty()) {
     llvm::errs() << "ERROR: unhandled instruction " << Name << "\n";

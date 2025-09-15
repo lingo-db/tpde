@@ -72,10 +72,13 @@ typedef bool v16i1 __attribute__((ext_vector_type(16)));
 // loads
 // --------------------------
 
-u32 TARGET_V1 loadi8(u8* ptr) { return *ptr; }
-u32 TARGET_V1 loadi16(u16* ptr) { return *ptr; }
-u32 TARGET_V1 loadi32(u32* ptr) { return *ptr; }
+u64 TARGET_V1 loadi8_zext(u8* ptr) { return *ptr; }
+u64 TARGET_V1 loadi16_zext(u16* ptr) { return *ptr; }
+u64 TARGET_V1 loadi32_zext(u32* ptr) { return *ptr; }
 u64 TARGET_V1 loadi64(u64* ptr) { return *ptr; }
+i64 TARGET_V1 loadi8_sext(i8 *ptr) { return *ptr; }
+i64 TARGET_V1 loadi16_sext(i16 *ptr) { return *ptr; }
+i64 TARGET_V1 loadi32_sext(i32 *ptr) { return *ptr; }
 
 struct i24 { i8 data[3]; };
 struct i40 { i8 data[5]; };
@@ -256,6 +259,7 @@ u16 TARGET_V1 bswapi16(u16 a) { return __builtin_bswap16(a); }
 u32 TARGET_V1 bswapi32(u32 a) { return __builtin_bswap32(a); }
 u64 TARGET_V1 bswapi48(u64 a) { return __builtin_bswap64(a) >> 16; }
 u64 TARGET_V1 bswapi64(u64 a) { return __builtin_bswap64(a); }
+u128 TARGET_V1 bswapi128(u128 a) { return (u128)__builtin_bswap64(a) << 64 | __builtin_bswap64(a >> 64); }
 
 u32 TARGET_V1 ctpopi32(u32 a) { return __builtin_popcount(a); }
 u64 TARGET_V1 ctpopi64(u64 a) { return __builtin_popcountll(a); }
@@ -786,8 +790,11 @@ FOPS(double)
 #undef FOP
 
 // --------------------------
-// prefetch
+// miscellaneous
 // --------------------------
+
+void TARGET_V1 trap(void) { __builtin_trap(); }
+void TARGET_V1 debugtrap(void) { __builtin_debugtrap(); }
 
 void prefetch_rl0(void* addr) { __builtin_prefetch(addr, 0, 0); }
 void prefetch_rl1(void* addr) { __builtin_prefetch(addr, 0, 1); }

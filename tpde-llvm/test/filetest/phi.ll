@@ -337,14 +337,14 @@ define i32 @phi_last_use(i1 %c, i32 %a, i32 %b) {
 ; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x20
 ; X64-NEXT:    mov ebx, esi
-; X64-NEXT:    test edi, 0x1
+; X64-NEXT:    test dil, 0x1
 ; X64-NEXT:    je <L0>
 ; X64-NEXT:    mov eax, 0x0
 ; X64-NEXT:    mov r12d, eax
 ; X64-NEXT:    jmp <L1>
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    lea eax, [rbx + 0x1]
-; X64-NEXT:    cmp eax, 0x0
+; X64-NEXT:    test eax, eax
 ; X64-NEXT:    jne <L0>
 ; X64-NEXT:    mov r12d, eax
 ; X64-NEXT:  <L1>:

@@ -87,9 +87,6 @@ struct LLVMCompilerX64 : tpde::x64::CompilerX64<LLVMAdaptor,
   std::optional<CallBuilder>
       create_call_builder(const llvm::CallBase * = nullptr) noexcept;
 
-  bool compile_unreachable(const llvm::Instruction *,
-                           const ValInfo &,
-                           u64) noexcept;
   bool compile_br(const llvm::Instruction *, const ValInfo &, u64) noexcept;
   void generate_conditional_branch(Jump jmp,
                                    IRBlockRef true_target,
@@ -134,9 +131,9 @@ struct LLVMCompilerX64 : tpde::x64::CompilerX64<LLVMAdaptor,
                                   GenericValuePart &&lhs_hi,
                                   GenericValuePart &&rhs_lo,
                                   GenericValuePart &&rhs_hi,
-                                  ScratchReg &res_lo,
-                                  ScratchReg &res_hi,
-                                  ScratchReg &res_of) noexcept;
+                                  ValuePart &&res_lo,
+                                  ValuePart &&res_hi,
+                                  ValuePart &&res_of) noexcept;
 };
 
 void LLVMCompilerX64::finish_func(u32 func_idx) noexcept {
@@ -198,14 +195,6 @@ std::optional<LLVMCompilerX64::CallBuilder>
   }
 }
 
-bool LLVMCompilerX64::compile_unreachable(const llvm::Instruction *,
-                                          const ValInfo &,
-                                          u64) noexcept {
-  ASM(UD2);
-  this->release_regs_after_return();
-  return true;
-}
-
 bool LLVMCompilerX64::compile_br(const llvm::Instruction *inst,
                                  const ValInfo &,
                                  u64) noexcept {
@@ -228,7 +217,7 @@ bool LLVMCompilerX64::compile_br(const llvm::Instruction *inst,
   {
     auto [_, cond_ref] = this->val_ref_single(br->getCondition());
     const auto cond_reg = cond_ref.load_to_reg();
-    ASM(TEST32ri, cond_reg, 1);
+    ASM(TEST8ri, cond_reg, 1);
   }
 
   generate_conditional_branch(Jump::jne, true_block, false_block);
@@ -333,22 +322,21 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
 
   const llvm::BranchInst *fuse_br = nullptr;
   const llvm::Instruction *fuse_ext = nullptr;
-  if (!cmp->user_empty() && *cmp->user_begin() == cmp->getNextNode() &&
-      (analyzer.liveness_info(val_idx(cmp)).ref_count <= 2)) {
-    auto *fuse_inst = cmp->getNextNode();
-    assert(cmp->hasNUses(1));
-    if (auto *br = llvm::dyn_cast<llvm::BranchInst>(fuse_inst)) {
-      assert(br->isConditional() && br->getCondition() == cmp);
-      fuse_br = br;
-    } else if (llvm::isa<llvm::ZExtInst, llvm::SExtInst>(fuse_inst) &&
-               fuse_inst->getType()->getIntegerBitWidth() <= 64) {
-      fuse_ext = fuse_inst;
+
+  bool single_use = cmp->hasNUses(1);
+  const llvm::Instruction *next = cmp->getNextNode();
+  if (auto *br = llvm::dyn_cast<llvm::BranchInst>(next);
+      br && br->isConditional() && br->getCondition() == cmp) {
+    fuse_br = br;
+  } else if (single_use && *cmp->user_begin() == next) {
+    if (llvm::isa<llvm::ZExtInst, llvm::SExtInst>(next) &&
+        next->getType()->getIntegerBitWidth() <= 64) {
+      fuse_ext = next;
     }
   }
 
   auto lhs = this->val_ref(cmp->getOperand(0));
   auto rhs = this->val_ref(cmp->getOperand(1));
-  ScratchReg res_scratch{this};
 
   if (int_width == 128) {
     // for 128 bit compares, we need to swap the operands sometimes
@@ -364,6 +352,7 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
     auto rhs_reg_hi = rhs_hi.load_to_reg();
 
     // Compare the ints using carried subtraction
+    ScratchReg res_scratch{this};
     if ((jump == Jump::je) || (jump == Jump::jne)) {
       // for eq,neq do something a bit quicker
       ScratchReg scratch{this};
@@ -400,7 +389,11 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
     AsmReg lhs_reg = lhs_op.has_reg() ? lhs_op.cur_reg() : lhs_op.load_to_reg();
     if (int_width <= 32) {
       if (rhs_op.is_const()) {
-        ASM(CMP32ri, lhs_reg, i32(rhs_op.const_data()[0]));
+        if (i32 rhs_val = i32(rhs_op.const_data()[0])) {
+          ASM(CMP32ri, lhs_reg, rhs_val);
+        } else {
+          ASM(TEST32rr, lhs_reg, lhs_reg);
+        }
       } else {
         AsmReg rhs_reg =
             rhs_op.has_reg() ? rhs_op.cur_reg() : rhs_op.load_to_reg();
@@ -409,7 +402,11 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
     } else {
       if (rhs_op.is_const() &&
           i32(rhs_op.const_data()[0]) == i64(rhs_op.const_data()[0])) {
-        ASM(CMP64ri, lhs_reg, rhs_op.const_data()[0]);
+        if (i64 rhs_val = rhs_op.const_data()[0]) {
+          ASM(CMP64ri, lhs_reg, rhs_val);
+        } else {
+          ASM(TEST64rr, lhs_reg, lhs_reg);
+        }
       } else {
         AsmReg rhs_reg =
             rhs_op.has_reg() ? rhs_op.cur_reg() : rhs_op.load_to_reg();
@@ -423,6 +420,11 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
   rhs.reset();
 
   if (fuse_br) {
+    if (!single_use) {
+      (void)result_ref(cmp); // ref-count for branch
+      generate_raw_set(
+          jump, result_ref(cmp).part(0).alloc_reg(), /*zext=*/false);
+    }
     auto true_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(0));
     auto false_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(1));
     generate_conditional_branch(jump, true_block, false_block);
@@ -430,16 +432,14 @@ bool LLVMCompilerX64::compile_icmp(const llvm::Instruction *inst,
   } else if (fuse_ext) {
     auto [_, res_ref] = result_ref_single(fuse_ext);
     if (llvm::isa<llvm::ZExtInst>(fuse_ext)) {
-      generate_raw_set(jump, res_scratch.alloc_gp());
+      generate_raw_set(jump, res_ref.alloc_reg(), /*zext=*/true);
     } else {
-      generate_raw_mask(jump, res_scratch.alloc_gp());
+      generate_raw_mask(jump, res_ref.alloc_reg());
     }
-    set_value(res_ref, res_scratch);
     this->adaptor->inst_set_fused(fuse_ext, true);
   } else {
     auto [_, res_ref] = result_ref_single(cmp);
-    generate_raw_set(jump, res_scratch.alloc_gp());
-    set_value(res_ref, res_scratch);
+    generate_raw_set(jump, res_ref.alloc_reg(), /*zext=*/false);
   }
 
   return true;
@@ -654,8 +654,6 @@ bool LLVMCompilerX64::handle_intrin(const llvm::IntrinsicInst *inst) noexcept {
     this->result_ref(inst).part(0).set_value(std::move(res));
     return true;
   }
-  case llvm::Intrinsic::trap: ASM(UD2); return true;
-  case llvm::Intrinsic::debugtrap: ASM(INT3); return true;
   case llvm::Intrinsic::x86_sse2_pause: ASM(PAUSE); return true;
   default: return false;
   }
@@ -666,16 +664,16 @@ bool LLVMCompilerX64::handle_overflow_intrin_128(OverflowOp op,
                                                  GenericValuePart &&lhs_hi,
                                                  GenericValuePart &&rhs_lo,
                                                  GenericValuePart &&rhs_hi,
-                                                 ScratchReg &res_lo,
-                                                 ScratchReg &res_hi,
-                                                 ScratchReg &res_of) noexcept {
+                                                 ValuePart &&res_lo,
+                                                 ValuePart &&res_hi,
+                                                 ValuePart &&res_of) noexcept {
   using EncodeFnTy = bool (LLVMCompilerX64::*)(GenericValuePart &&,
                                                GenericValuePart &&,
                                                GenericValuePart &&,
                                                GenericValuePart &&,
-                                               ScratchReg &,
-                                               ScratchReg &,
-                                               ScratchReg &);
+                                               ValuePart &,
+                                               ValuePart &,
+                                               ValuePart &);
   EncodeFnTy encode_fn = nullptr;
   switch (op) {
   case OverflowOp::uadd:

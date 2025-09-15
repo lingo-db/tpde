@@ -94,9 +94,6 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                       LLVMBasicValType ty,
                       GenericValuePart el) noexcept;
 
-  bool compile_unreachable(const llvm::Instruction *,
-                           const ValInfo &,
-                           u64) noexcept;
   bool compile_br(const llvm::Instruction *, const ValInfo &, u64) noexcept;
   void generate_conditional_branch(Jump jmp,
                                    IRBlockRef true_target,
@@ -141,9 +138,9 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                                   GenericValuePart &&lhs_hi,
                                   GenericValuePart &&rhs_lo,
                                   GenericValuePart &&rhs_hi,
-                                  ScratchReg &res_lo,
-                                  ScratchReg &res_hi,
-                                  ScratchReg &res_of) noexcept;
+                                  ValuePart &&res_lo,
+                                  ValuePart &&res_hi,
+                                  ValuePart &&res_of) noexcept;
 };
 
 void LLVMCompilerArm64::finish_func(u32 func_idx) noexcept {
@@ -282,14 +279,6 @@ void LLVMCompilerArm64::insert_element(ValueRef &vec_vr,
   vec_ref.set_modified();
 }
 
-bool LLVMCompilerArm64::compile_unreachable(const llvm::Instruction *,
-                                            const ValInfo &,
-                                            u64) noexcept {
-  ASM(UDF, 1);
-  this->release_regs_after_return();
-  return true;
-}
-
 bool LLVMCompilerArm64::compile_br(const llvm::Instruction *inst,
                                    const ValInfo &,
                                    u64) noexcept {
@@ -418,22 +407,21 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
 
   const llvm::BranchInst *fuse_br = nullptr;
   const llvm::Instruction *fuse_ext = nullptr;
-  if (!cmp->user_empty() && *cmp->user_begin() == cmp->getNextNode() &&
-      (analyzer.liveness_info(val_idx(cmp)).ref_count <= 2)) {
-    auto *fuse_inst = cmp->getNextNode();
-    assert(cmp->hasNUses(1));
-    if (auto *br = llvm::dyn_cast<llvm::BranchInst>(fuse_inst)) {
-      assert(br->isConditional() && br->getCondition() == cmp);
-      fuse_br = br;
-    } else if (llvm::isa<llvm::ZExtInst, llvm::SExtInst>(fuse_inst) &&
-               fuse_inst->getType()->getIntegerBitWidth() <= 64) {
-      fuse_ext = fuse_inst;
+
+  bool single_use = cmp->hasNUses(1);
+  const llvm::Instruction *next = cmp->getNextNode();
+  if (auto *br = llvm::dyn_cast<llvm::BranchInst>(next);
+      br && br->isConditional() && br->getCondition() == cmp) {
+    fuse_br = br;
+  } else if (single_use && *cmp->user_begin() == next) {
+    if (llvm::isa<llvm::ZExtInst, llvm::SExtInst>(next) &&
+        next->getType()->getIntegerBitWidth() <= 64) {
+      fuse_ext = next;
     }
   }
 
   auto lhs = this->val_ref(cmp->getOperand(0));
   auto rhs = this->val_ref(cmp->getOperand(1));
-  ScratchReg res_scratch{this};
 
   if (int_width == 128) {
     auto lhs_lo = lhs.part(0);
@@ -472,13 +460,15 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
 
     if (rhs_op.is_const()) {
       u64 imm = rhs_op.const_data()[0];
-      if (imm == 0 && fuse_br && (jump == Jump::Jeq || jump == Jump::Jne)) {
+      if (imm == 0 && single_use && fuse_br &&
+          (jump == Jump::Jeq || jump == Jump::Jne)) {
         // Generate CBZ/CBNZ if possible. However, lhs_reg might be the register
         // corresponding to a PHI node, which gets modified before the branch.
         // We have to detect this case and generate a copy into a separate
         // register. This case is not easy to detect here, though. Therefore,
         // for now we always copy the value into a register that we own.
         // TODO: copy only when lhs_reg belongs to an overwritten PHI node.
+        ScratchReg res_scratch{this};
         if (!lhs_op.can_salvage()) {
           AsmReg src_reg = lhs_reg;
           lhs_reg = res_scratch.alloc_gp();
@@ -528,6 +518,10 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
   rhs.reset();
 
   if (fuse_br) {
+    if (!single_use) {
+      (void)result_ref(cmp); // ref-count for branch
+      generate_raw_set(jump, result_ref(cmp).part(0).alloc_reg());
+    }
     auto true_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(0));
     auto false_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(1));
     generate_conditional_branch(jump, true_block, false_block);
@@ -535,16 +529,14 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
   } else if (fuse_ext) {
     auto [_, res_ref] = this->result_ref_single(fuse_ext);
     if (llvm::isa<llvm::ZExtInst>(fuse_ext)) {
-      generate_raw_set(jump, res_scratch.alloc_gp());
+      generate_raw_set(jump, res_ref.alloc_reg());
     } else {
-      generate_raw_mask(jump, res_scratch.alloc_gp());
+      generate_raw_mask(jump, res_ref.alloc_reg());
     }
-    set_value(res_ref, res_scratch);
     this->adaptor->inst_set_fused(fuse_ext, true);
   } else {
     auto [_, res_ref] = this->result_ref_single(cmp);
-    generate_raw_set(jump, res_scratch.alloc_gp());
-    set_value(res_ref, res_scratch);
+    generate_raw_set(jump, res_ref.alloc_reg());
   }
 
   return true;
@@ -746,8 +738,6 @@ bool LLVMCompilerArm64::handle_intrin(
     ASM(MOVx, res_vr.alloc_reg(), op->isZeroValue() ? DA_GP(29) : DA_ZR);
     return true;
   }
-  case llvm::Intrinsic::trap: ASM(BRK, 1); return true;
-  case llvm::Intrinsic::debugtrap: ASM(BRK, 0xf000); return true;
   case llvm::Intrinsic::aarch64_crc32cx: {
     auto [lhs_vr, lhs_ref] = this->val_ref_single(inst->getOperand(0));
     auto [rhs_vr, rhs_ref] = this->val_ref_single(inst->getOperand(1));
@@ -789,60 +779,60 @@ bool LLVMCompilerArm64::handle_overflow_intrin_128(
     GenericValuePart &&lhs_hi,
     GenericValuePart &&rhs_lo,
     GenericValuePart &&rhs_hi,
-    ScratchReg &res_lo,
-    ScratchReg &res_hi,
-    ScratchReg &res_of) noexcept {
+    ValuePart &&res_lo,
+    ValuePart &&res_hi,
+    ValuePart &&res_of) noexcept {
   switch (op) {
   case OverflowOp::uadd: {
-    AsmReg lhs_lo_reg = gval_as_reg_reuse(lhs_lo, res_lo);
-    AsmReg rhs_lo_reg = gval_as_reg_reuse(rhs_lo, res_lo);
-    AsmReg res_lo_reg = res_lo.alloc_gp();
+    AsmReg lhs_lo_reg = gval_as_reg(lhs_lo); // TODO: reuse reg
+    AsmReg rhs_lo_reg = gval_as_reg(rhs_lo); // TODO: reuse reg
+    AsmReg res_lo_reg = res_lo.alloc_reg(this);
     ASM(ADDSx, res_lo_reg, lhs_lo_reg, rhs_lo_reg);
-    AsmReg lhs_hi_reg = gval_as_reg_reuse(lhs_hi, res_hi);
-    AsmReg rhs_hi_reg = gval_as_reg_reuse(rhs_hi, res_hi);
-    AsmReg res_hi_reg = res_hi.alloc_gp();
+    AsmReg lhs_hi_reg = gval_as_reg(lhs_hi); // TODO: reuse reg
+    AsmReg rhs_hi_reg = gval_as_reg(rhs_hi); // TODO: reuse reg
+    AsmReg res_hi_reg = res_hi.alloc_reg(this);
     ASM(ADCSx, res_hi_reg, lhs_hi_reg, rhs_hi_reg);
-    AsmReg res_of_reg = res_of.alloc_gp();
+    AsmReg res_of_reg = res_of.alloc_reg(this);
     ASM(CSETw, res_of_reg, DA_CS);
     return true;
   }
   case OverflowOp::sadd: {
-    AsmReg lhs_lo_reg = gval_as_reg_reuse(lhs_lo, res_lo);
-    AsmReg rhs_lo_reg = gval_as_reg_reuse(rhs_lo, res_lo);
-    AsmReg res_lo_reg = res_lo.alloc_gp();
+    AsmReg lhs_lo_reg = gval_as_reg(lhs_lo); // TODO: reuse reg
+    AsmReg rhs_lo_reg = gval_as_reg(rhs_lo); // TODO: reuse reg
+    AsmReg res_lo_reg = res_lo.alloc_reg(this);
     ASM(ADDSx, res_lo_reg, lhs_lo_reg, rhs_lo_reg);
-    AsmReg lhs_hi_reg = gval_as_reg_reuse(lhs_hi, res_hi);
-    AsmReg rhs_hi_reg = gval_as_reg_reuse(rhs_hi, res_hi);
-    AsmReg res_hi_reg = res_hi.alloc_gp();
+    AsmReg lhs_hi_reg = gval_as_reg(lhs_hi); // TODO: reuse reg
+    AsmReg rhs_hi_reg = gval_as_reg(rhs_hi); // TODO: reuse reg
+    AsmReg res_hi_reg = res_hi.alloc_reg(this);
     ASM(ADCSx, res_hi_reg, lhs_hi_reg, rhs_hi_reg);
-    AsmReg res_of_reg = res_of.alloc_gp();
+    AsmReg res_of_reg = res_of.alloc_reg(this);
     ASM(CSETw, res_of_reg, DA_VS);
     return true;
   }
 
   case OverflowOp::usub: {
-    AsmReg lhs_lo_reg = gval_as_reg_reuse(lhs_lo, res_lo);
-    AsmReg rhs_lo_reg = gval_as_reg_reuse(rhs_lo, res_lo);
-    AsmReg res_lo_reg = res_lo.alloc_gp();
+    AsmReg lhs_lo_reg = gval_as_reg(lhs_lo); // TODO: reuse reg
+    AsmReg rhs_lo_reg = gval_as_reg(rhs_lo); // TODO: reuse reg
+    AsmReg res_lo_reg = res_lo.alloc_reg(this);
     ASM(SUBSx, res_lo_reg, lhs_lo_reg, rhs_lo_reg);
-    AsmReg lhs_hi_reg = gval_as_reg_reuse(lhs_hi, res_hi);
-    AsmReg rhs_hi_reg = gval_as_reg_reuse(rhs_hi, res_hi);
-    AsmReg res_hi_reg = res_hi.alloc_gp();
+    AsmReg lhs_hi_reg = gval_as_reg(lhs_hi); // TODO: reuse reg
+    AsmReg rhs_hi_reg = gval_as_reg(rhs_hi); // TODO: reuse reg
+    AsmReg res_hi_reg = res_hi.alloc_reg(this);
     ASM(SBCSx, res_hi_reg, lhs_hi_reg, rhs_hi_reg);
-    AsmReg res_of_reg = res_of.alloc_gp();
+    AsmReg res_of_reg = res_of.alloc_reg(this);
     ASM(CSETw, res_of_reg, DA_CC);
     return true;
   }
   case OverflowOp::ssub: {
-    AsmReg lhs_lo_reg = gval_as_reg_reuse(lhs_lo, res_lo);
-    AsmReg rhs_lo_reg = gval_as_reg_reuse(rhs_lo, res_lo);
-    AsmReg res_lo_reg = res_lo.alloc_gp();
+    AsmReg lhs_lo_reg = gval_as_reg(lhs_lo); // TODO: reuse reg
+    AsmReg rhs_lo_reg = gval_as_reg(rhs_lo); // TODO: reuse reg
+    AsmReg res_lo_reg = res_lo.alloc_reg(this);
     ASM(SUBSx, res_lo_reg, lhs_lo_reg, rhs_lo_reg);
-    AsmReg lhs_hi_reg = gval_as_reg_reuse(lhs_hi, res_hi);
-    AsmReg rhs_hi_reg = gval_as_reg_reuse(rhs_hi, res_hi);
-    AsmReg res_hi_reg = res_hi.alloc_gp();
+    AsmReg lhs_hi_reg = gval_as_reg(lhs_hi); // TODO: reuse reg
+    AsmReg rhs_hi_reg = gval_as_reg(rhs_hi); // TODO: reuse reg
+    AsmReg res_hi_reg = res_hi.alloc_reg(this);
     ASM(SBCSx, res_hi_reg, lhs_hi_reg, rhs_hi_reg);
-    AsmReg res_of_reg = res_of.alloc_gp();
+    AsmReg res_of_reg = res_of.alloc_reg(this);
     ASM(CSETw, res_of_reg, DA_VS);
     return true;
   }

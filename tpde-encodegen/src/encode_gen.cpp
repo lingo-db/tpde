@@ -60,7 +60,7 @@ struct GenerationState {
   /// multiple blocks. Used for eliminating useless moves at function end.
   llvm::DenseMap<unsigned, const llvm::MachineInstr *> ret_defs{};
   unsigned cur_inst_id = 0;
-  int num_ret_regs = -1;
+  unsigned num_ret_regs = 0;
   std::vector<unsigned> return_regs = {};
   unsigned &sym_count;
   std::unordered_map<unsigned, unsigned> const_pool_indices_used = {};
@@ -93,7 +93,6 @@ struct GenerationState {
                              std::string_view sym_name,
                              unsigned cp_idx);
 
-  void handle_return(llvm::raw_ostream &os, llvm::MachineInstr *inst);
   void handle_terminator(llvm::raw_ostream &os, llvm::MachineInstr *inst);
 
   void handle_end_of_block(llvm::raw_ostream &os, llvm::MachineBasicBlock *);
@@ -230,13 +229,7 @@ bool generate_inst(std::string &buf,
       return true;
     }
     if (src_op.isKill() && state.ret_defs.lookup(dst_id) == inst) {
-      state.fmt_line(buf, 4, "// optimized move to returned register");
-      state.fmt_line(buf,
-                     4,
-                     "scratch_{} = std::move(scratch_{});",
-                     state.target->reg_name_lower(dst_id),
-                     state.target->reg_name_lower(src_id));
-
+      state.fmt_line(buf, 4, "// move to returned register optimized out");
       llvm::raw_string_ostream os(buf);
       state.kill_reg(os, dst_id);
       return true;
@@ -768,49 +761,6 @@ void GenerationState::handle_end_of_block(llvm::raw_ostream &os,
   }
 }
 
-void GenerationState::handle_return(llvm::raw_ostream &os,
-                                    llvm::MachineInstr *inst) {
-  // record the number of return regs
-  {
-    unsigned num_ret_regs = 0;
-    std::vector<unsigned> ret_regs = {};
-    for (const auto &mach_op : inst->uses()) {
-      assert(mach_op.getType() == llvm::MachineOperand::MO_Register);
-      if (mach_op.isUndef()) { // LR on AArch64
-        continue;
-      }
-      const auto reg = mach_op.getReg();
-      assert(reg.isPhysical());
-      const auto reg_id = target->reg_id_from_mc_reg(reg);
-      if (this->num_ret_regs == -1) {
-        used_regs.insert(reg_id);
-        ret_regs.push_back(reg_id);
-      } else {
-        if (return_regs.size() <= num_ret_regs ||
-            return_regs[num_ret_regs] != reg_id) {
-          std::cerr << std::format(
-              "ERROR: Found mismatching return with register "
-              "{}({})",
-              reg_id,
-              target->reg_name_lower(reg_id));
-          exit(1);
-        }
-      }
-      ++num_ret_regs;
-    }
-    if (this->num_ret_regs == -1) {
-      this->num_ret_regs = static_cast<int>(num_ret_regs);
-      return_regs = std::move(ret_regs);
-    }
-  }
-
-  if (func->size() > 1 && inst->getParent()->getNextNode()) {
-    os << "  derived()->generate_raw_jump(Derived::Jump::jmp, "
-          "ret_converge_label);\n";
-    return;
-  }
-}
-
 void GenerationState::handle_terminator(llvm::raw_ostream &os,
                                         llvm::MachineInstr *inst) {
   if (!inst->isBranch() || inst->isIndirectBranch()) {
@@ -864,11 +814,26 @@ void GenerationState::handle_terminator(llvm::raw_ostream &os,
 }
 
 bool encode_prepass(llvm::MachineFunction *func, GenerationState &state) {
+  bool ret_regs_defined = false;
   for (auto bb_it = func->begin(); bb_it != func->end(); ++bb_it) {
     for (auto inst_it = bb_it->begin(); inst_it != bb_it->end(); ++inst_it) {
       llvm::MachineInstr &inst = *inst_it;
       if (inst.isDebugInstr() || inst.isCFIInstruction()) {
         continue;
+      }
+
+      if (inst.isReturn()) {
+        if (!ret_regs_defined) {
+          for (const auto &mo : inst.all_uses()) {
+            if (!mo.isReg() || mo.isUndef()) { // undef => skip LR on AArch64
+              continue;
+            }
+            auto reg_id = state.target->reg_id_from_mc_reg(mo.getReg());
+            state.return_regs.push_back(reg_id);
+          }
+          state.num_ret_regs = state.return_regs.size();
+          ret_regs_defined = true;
+        }
       }
 
       if (inst.isTerminator() || inst.isPseudo() ||
@@ -896,14 +861,9 @@ bool encode_prepass(llvm::MachineFunction *func, GenerationState &state) {
   if (func->size() == 1 && func->begin()->back().isReturn()) {
     // For single-block functions, try to identify moves to result registers
     const auto &mbb = *func->begin();
-    const auto &ret = mbb.back();
-    unsigned missing_defs = 0;
-    for (const auto &mo : ret.operands()) {
-      if (!mo.isReg() || !mo.isUse() || mo.isUndef()) {
-        continue;
-      }
-      state.ret_defs[state.target->reg_id_from_mc_reg(mo.getReg())] = nullptr;
-      missing_defs += 1;
+    unsigned missing_defs = state.num_ret_regs;
+    for (auto ret_reg : state.return_regs) {
+      state.ret_defs[ret_reg] = nullptr;
     }
 
     // Find last def that is unused
@@ -931,6 +891,22 @@ bool encode_prepass(llvm::MachineFunction *func, GenerationState &state) {
       }
       if (!missing_defs) {
         break;
+      }
+    }
+
+    // Find actual return register
+    for (const llvm::MachineInstr &mi : llvm::reverse(mbb)) {
+      auto move_ops = state.target->is_move(mi);
+      if (!move_ops) {
+        continue;
+      }
+      auto &src_op = mi.getOperand(move_ops->second);
+      auto &dst_op = mi.getOperand(move_ops->first);
+      auto src_id = state.target->reg_id_from_mc_reg(src_op.getReg());
+      auto dst_id = state.target->reg_id_from_mc_reg(dst_op.getReg());
+      if (src_op.isKill() && state.ret_defs.lookup(dst_id) == &mi) {
+        std::replace(
+            state.return_regs.begin(), state.return_regs.end(), dst_id, src_id);
       }
     }
   }
@@ -1001,6 +977,10 @@ bool create_encode_function(llvm::MachineFunction *func,
   auto &mach_reg_info = func->getRegInfo();
   // const auto &target_reg_info = func->getSubtarget().getRegisterInfo();
 
+  // Mark return registers as used.
+  for (auto reg_id : state.return_regs) {
+    state.used_regs.insert(reg_id);
+  }
 
   // map inputs
   {
@@ -1013,7 +993,6 @@ bool create_encode_function(llvm::MachineFunction *func,
       state.param_names.push_back(std::move(name));
 
       const auto reg_id = target->reg_id_from_mc_reg(it->first);
-      assert(!state.used_regs.contains(reg_id));
       state.used_regs.insert(reg_id);
       state.asm_operand_refs[reg_id] = state.param_names[idx++];
       state.operand_ref_counts[state.param_names.back()] = 1;
@@ -1062,7 +1041,10 @@ bool create_encode_function(llvm::MachineFunction *func,
       os << "\n";
 
       if (inst->isReturn()) {
-        state.handle_return(os, inst);
+        if (func->size() > 1 && inst->getParent()->getNextNode()) {
+          os << "  derived()->generate_raw_jump(Derived::Jump::jmp, "
+                "ret_converge_label);\n";
+        }
       } else if (inst->isTerminator()) {
         state.handle_terminator(os, inst);
       } else {
@@ -1172,8 +1154,7 @@ bool create_encode_function(llvm::MachineFunction *func,
 
   // assignments for the results need to be after the check for fixed reg
   // backups
-  assert(state.num_ret_regs >= 0);
-  for (int idx = 0; idx < state.num_ret_regs; ++idx) {
+  for (unsigned idx = 0; idx < state.num_ret_regs; ++idx) {
     const auto reg = state.return_regs[idx];
     auto name = state.target->reg_name_lower(reg);
 
@@ -1185,67 +1166,59 @@ bool create_encode_function(llvm::MachineFunction *func,
       state.asm_operand_refs.erase(it);
     }
 
-    os << "  result_" << idx << " = std::move(scratch_" << name << ");\n";
+    os << "  result_" << idx << ".set_value(derived(), std::move(scratch_"
+       << name << "));\n";
   }
 
   // TODO
   // for now, always return true
   os << "  return true;\n";
 
-  std::string func_decl{};
   // finish up function header
   {
-    std::format_to(
-        std::back_inserter(impl_lines),
-        "template <typename Adaptor,\n"
-        "          typename Derived,\n"
-        "          template <typename, typename, typename>\n"
-        "          class BaseTy,\n"
-        "          typename Config>"
-        "bool EncodeCompiler<Adaptor, Derived, BaseTy, Config>::encode_{}(",
-        name);
-    std::format_to(std::back_inserter(decl_lines), "    bool encode_{}(", name);
-  }
-
-  auto first = true;
-  for (auto &param : state.param_names) {
-    if (!first) {
-      std::format_to(std::back_inserter(func_decl), ", ");
-    } else {
-      first = false;
+    std::string func_args;
+    llvm::raw_string_ostream func_args_os(func_args);
+    for (auto &param : state.param_names) {
+      func_args_os << (func_args.empty() ? "" : ", ") << "GenericValuePart &&"
+                   << param;
     }
-    std::format_to(
-        std::back_inserter(func_decl), "GenericValuePart &&{}", param);
-  }
-
-  if (state.num_ret_regs == -1) {
-    // TODO(ts): might mean no return
-    std::cerr
-        << "ERROR: number of return registers not set at end of function\n";
-    return false;
-  }
-
-  for (int i = 0; i < state.num_ret_regs; ++i) {
-    if (!first) {
-      std::format_to(std::back_inserter(func_decl), ", ");
-    } else {
-      first = false;
+    // We generate two variants: one with lvalue ref results and one with rvalue
+    // ref results. This permits callers to use call the function with rvalues.
+    std::string func_args_rvalue = func_args;
+    llvm::raw_string_ostream func_args_rvalue_os(func_args_rvalue);
+    for (unsigned i = 0; i < state.num_ret_regs; ++i) {
+      func_args_os << (func_args.empty() ? "" : ", ") << "ValuePart &result_"
+                   << i;
+      func_args_rvalue_os << (func_args.empty() ? "" : ", ")
+                          << "ValuePart &&result_" << i;
     }
-    std::format_to(std::back_inserter(func_decl), "ScratchReg &result_{}", i);
+
+    llvm::raw_string_ostream(impl_lines)
+        << "template <typename Adaptor,\n"
+           "          typename Derived,\n"
+           "          template <typename, typename, typename>\n"
+           "          class BaseTy,\n"
+           "          typename Config>\n"
+           "bool EncodeCompiler<Adaptor, Derived, BaseTy, Config>::encode_"
+        << name << "(" << func_args << ") {\n"
+        << write_buf << write_buf_inner << "\n}\n\n";
+    llvm::raw_string_ostream decl_os(decl_lines);
+    decl_os << "  bool encode_" << name << "(" << func_args << ");\n";
+    if (state.num_ret_regs > 0) {
+      decl_os << "  bool encode_" << name << "(" << func_args_rvalue << ") { ";
+      decl_os << " return encode_" << name << "(";
+      bool first = true;
+      for (auto &param : state.param_names) {
+        decl_os << (first ? "" : ", ") << "std::move(" << param << ")";
+        first = false;
+      }
+      for (unsigned i = 0; i < state.num_ret_regs; ++i) {
+        decl_os << (first ? "" : ", ") << "result_" << i;
+        first = false;
+      }
+      decl_os << "); }\n";
+    }
   }
-
-  func_decl += ')';
-
-  decl_lines += func_decl;
-  decl_lines += ";\n";
-
-  impl_lines += func_decl;
-  impl_lines += " {\n";
-
-  impl_lines += write_buf;
-  impl_lines += write_buf_inner;
-
-  impl_lines += "\n}\n\n";
 
   return true;
 }
