@@ -70,6 +70,8 @@ struct CCInfo {
   /// Possible argument registers; these registers will not be allocated until
   /// all arguments have been assigned.
   const u64 arg_regs;
+  /// Size of red zone below stack pointer.
+  const u8 red_zone_size = 0;
 };
 
 class CCAssigner {
@@ -106,7 +108,6 @@ struct CompilerBase {
 
   using BlockIndex = typename Analyzer<Adaptor>::BlockIndex;
 
-  using Assembler = typename Config::Assembler;
   using AsmReg = typename Config::AsmReg;
 
   using RegisterFile = tpde::RegisterFile<Config::NUM_BANKS, 32>;
@@ -127,6 +128,20 @@ struct CompilerBase {
   struct {
     /// The current size of the stack frame
     u32 frame_size = 0;
+    /// Whether the stack frame might have dynamic alloca. Dynamic allocas may
+    /// require a different and less efficient frame setup.
+    bool has_dynamic_alloca;
+    /// Whether the function is guaranteed to be a leaf function. Throughout the
+    /// entire function, the compiler may assume the absence of function calls.
+    bool is_leaf_function;
+    /// Whether the function actually includes a call. There are cases, where it
+    /// is not clear from the beginning whether a function has function calls.
+    /// If a function has no calls, this will allow using the red zone
+    /// guaranteed by some ABIs.
+    bool generated_call;
+    /// Whether the stack frame is used. If the stack frame is never used, the
+    /// frame setup can in some cases be omitted entirely.
+    bool frame_used;
     /// Free-Lists for 1/2/4/8/16 sized allocations
     // TODO(ts): make the allocations for 4/8 different from the others
     // since they are probably the one's most used?
@@ -169,7 +184,7 @@ private:
   typename Config::DefaultCCAssigner default_cc_assigner;
 
 public:
-  Assembler assembler;
+  typename Config::Assembler assembler;
   Config::FunctionWriter text_writer;
   // TODO(ts): smallvector?
   std::vector<SymRef> func_syms;
@@ -195,31 +210,34 @@ public:
     EndIter to;
   };
 
+  /// Call argument, enhancing an IRValueRef with information on how to pass it.
   struct CallArg {
     enum class Flag : u8 {
-      none,
-      zext,
-      sext,
-      sret,
-      byval
+      none,        ///< No extra handling.
+      zext,        ///< Scalar integer, zero-extend to target-specific size.
+      sext,        ///< Scalar integer, sign-extend to target-specific size.
+      sret,        ///< Struct return pointer.
+      byval,       ///< Value is copied into corresponding stack slot.
+      allow_split, ///< Value parts can be split across stack/registers.
     };
 
     explicit CallArg(IRValueRef value,
                      Flag flags = Flag::none,
-                     u8 byval_align = 0,
+                     u8 byval_align = 1,
                      u32 byval_size = 0)
         : value(value),
           flag(flags),
           byval_align(byval_align),
           byval_size(byval_size) {}
 
-    IRValueRef value;
-    Flag flag;
-    u8 byval_align;
-    u8 ext_bits = 0;
-    u32 byval_size;
+    IRValueRef value; ///< Argument IR value.
+    Flag flag;        ///< Value handling flag.
+    u8 byval_align;   ///< For Flag::byval, the stack alignment.
+    u8 ext_bits = 0;  ///< For Flag::zext and Flag::sext, the source bit width.
+    u32 byval_size;   ///< For Flag::byval, the argument size.
   };
 
+  /// Base class for target-specific CallBuilder implementations.
   template <typename CBDerived>
   class CallBuilderBase {
   protected:
@@ -228,7 +246,6 @@ public:
 
     RegisterFile::RegBitSet arg_regs{};
 
-  public:
     CallBuilderBase(Derived &compiler, CCAssigner &assigner) noexcept
         : compiler(compiler), assigner(assigner) {}
 
@@ -238,19 +255,34 @@ public:
     // void call_impl(std::variant<SymRef, ValuePart> &&) noexcept;
     CBDerived *derived() noexcept { return static_cast<CBDerived *>(this); }
 
+  public:
+    /// Add a value part as argument. cca must be populated with information
+    /// about the argument, except for the reg/stack_off, which are set by the
+    /// CCAssigner. If no register bank is assigned, the register bank and size
+    /// are retrieved from the value part, otherwise, the size must be set, too.
     void add_arg(ValuePart &&vp, CCAssignment cca) noexcept;
+    /// Add a full IR value as argument, with an explicit number of parts.
+    /// Values are decomposed into their parts and are typically either fully
+    /// in registers or fully on the stack (except CallArg::Flag::allow_split).
     void add_arg(const CallArg &arg, u32 part_count) noexcept;
+    /// Add a full IR value as argument. The number of value parts must be
+    /// exposed via val_parts. Values are decomposed into their parts and are
+    /// typically either fully in registers or fully on the stack (except
+    /// CallArg::Flag::allow_split).
     void add_arg(const CallArg &arg) noexcept {
       add_arg(std::move(arg), compiler.val_parts(arg.value).count());
     }
 
-    // evict registers, do call, reset stack frame
+    /// Generate the function call (evict registers, call, reset stack frame).
     void call(std::variant<SymRef, ValuePart>) noexcept;
 
+    /// Assign next return value part to vp.
     void add_ret(ValuePart &vp, CCAssignment cca) noexcept;
+    /// Assign next return value part to vp.
     void add_ret(ValuePart &&vp, CCAssignment cca) noexcept {
       add_ret(vp, cca);
     }
+    /// Assign return values to the IR value.
     void add_ret(ValueRef &vr) noexcept;
   };
 
@@ -327,21 +359,61 @@ public:
     init_variable_ref(adaptor->val_local_idx(value), var_ref_data);
   }
 
+  /// \name Stack Slots
+  /// @{
+
+  /// Allocate a static stack slot.
   i32 allocate_stack_slot(u32 size) noexcept;
+  /// Free a static stack slot.
   void free_stack_slot(u32 slot, u32 size) noexcept;
 
-  template <typename Fn>
-  void handle_func_arg(u32 arg_idx, IRValueRef arg, Fn add_arg) noexcept;
+  /// @}
 
+  /// Assign function argument in prologue. \ref align can be used to increase
+  /// the minimal stack alignment of the first part of the argument. If \ref
+  /// allow_split is set, the argument can be passed partially in registers,
+  /// otherwise (default) it must be either passed completely in registers or
+  /// completely on the stack.
+  void prologue_assign_arg(CCAssigner *cc_assigner,
+                           u32 arg_idx,
+                           IRValueRef arg,
+                           u32 align = 1,
+                           bool allow_split = false) noexcept;
+
+  /// \name Value References
+  /// @{
+
+  /// Get a using reference to a value.
   ValueRef val_ref(IRValueRef value) noexcept;
 
+  /// Get a using reference to a single-part value and provide direct access to
+  /// the only part. This is a convenience function; note that the ValueRef must
+  /// outlive the ValuePartRef (i.e. auto p = val_ref().part(0); won't work, as
+  /// the value will possibly be deallocated when the ValueRef is destroyed).
   std::pair<ValueRef, ValuePartRef> val_ref_single(IRValueRef value) noexcept;
 
-  /// Get a defining reference to a value
+  /// Get a defining reference to a value.
   ValueRef result_ref(IRValueRef value) noexcept;
 
+  /// Get a defining reference to a single-part value and provide direct access
+  /// to the only part. Similar to val_ref_single().
   std::pair<ValueRef, ValuePartRef>
       result_ref_single(IRValueRef value) noexcept;
+
+  /// Make dst an alias for src, which must be a non-constant value with an
+  /// identical part configuration. src must be in its last use (is_owned()),
+  /// and the assignment will be repurposed for dst, keeping all assigned
+  /// registers and stack slots.
+  ValueRef result_ref_alias(IRValueRef dst, ValueRef &&src) noexcept;
+
+  /// Initialize value as a pointer into a stack variable (i.e., a value
+  /// allocated from cur_static_allocas() or similar) with an offset. The
+  /// result value will be a stack variable itself.
+  ValueRef result_ref_stack_slot(IRValueRef value,
+                                 AssignmentPartRef base,
+                                 i32 off) noexcept;
+
+  /// @}
 
   [[deprecated("Use ValuePartRef::set_value")]]
   void set_value(ValuePartRef &val_ref, ScratchReg &scratch) noexcept;
@@ -360,9 +432,13 @@ public:
   AsmReg gval_as_reg_reuse(GenericValuePart &gv, ScratchReg &dst) noexcept;
 
 private:
+  /// @internal Select register when a value needs to be evicted.
   Reg select_reg_evict(RegBank bank, u64 exclusion_mask) noexcept;
 
 public:
+  /// \name Low-Level Assignment Register Handling
+  /// @{
+
   /// Select an available register, evicting loaded values if needed.
   Reg select_reg(RegBank bank, u64 exclusion_mask) noexcept {
     Reg res = register_file.find_first_free_excluding(bank, exclusion_mask);
@@ -375,6 +451,7 @@ public:
   /// Reload a value part from memory or recompute variable address.
   void reload_to_reg(AsmReg dst, AssignmentPartRef ap) noexcept;
 
+  /// Allocate a stack slot for an assignment.
   void allocate_spill_slot(AssignmentPartRef ap) noexcept;
 
   /// Ensure the value is spilled in its stack slot (except variable refs).
@@ -389,9 +466,50 @@ public:
   /// Free the register. Requires that the contained value is already spilled.
   void free_reg(Reg reg) noexcept;
 
+  /// @}
+
+  /// \name High-Level Branch Generation
+  /// @{
+
+  /// Generate an unconditional branch at the end of a basic block. No further
+  /// instructions must follow. If target is the next block in the block order,
+  /// the branch is omitted.
+  void generate_uncond_branch(IRBlockRef target) noexcept;
+
+  /// Generate an conditional branch at the end of a basic block.
+  template <typename Jump>
+  void generate_cond_branch(Jump jmp,
+                            IRBlockRef true_target,
+                            IRBlockRef false_target) noexcept;
+
+  /// Generate a switch at the end of a basic block. Only the lowest bits of the
+  /// condition are considered. The condition must be a general-purpose
+  /// register. The cases must be sorted and every case value must appear at
+  /// most once.
+  void generate_switch(
+      ScratchReg &&cond,
+      u32 width,
+      IRBlockRef default_block,
+      std::span<const std::pair<u64, IRBlockRef>> cases) noexcept;
+
+  /// @}
+
+  /// \name Low-Level Branch Primitives
+  /// The general flow of using these low-level primitive is:
+  /// 1. spill_before_branch()
+  /// 2. begin_branch_region()
+  /// 3. One or more calls to generate_branch_to_block()
+  /// 4. end_branch_region()
+  /// 5. release_spilled_regs()
+  /// @{
+
   // TODO(ts): switch to a branch_spill_before naming style?
+  /// Spill values that need to be spilled for later blocks. Returns the set
+  /// of registers that will be free'd at the end of the block; pass this to
+  /// release_spilled_regs().
   typename RegisterFile::RegBitSet
       spill_before_branch(bool force_spill = false) noexcept;
+  /// Free registers marked by spill_before_branch().
   void release_spilled_regs(typename RegisterFile::RegBitSet) noexcept;
 
   /// When reaching a point in the function where no other blocks will be
@@ -416,6 +534,18 @@ public:
 #endif
   }
 
+  /// Generate a branch to a basic block; execution continues afterwards.
+  /// Multiple calls to this function can be used to build conditional branches.
+  /// @tparam Jump Target-defined Jump type (e.g., CompilerX64::Jump).
+  /// @param needs_split Result of branch_needs_split(); pass false for an
+  ///  unconditional branch.
+  /// @param last_inst Whether fall-through to target is possible.
+  template <typename Jump>
+  void generate_branch_to_block(Jump jmp,
+                                IRBlockRef target,
+                                bool needs_split,
+                                bool last_inst) noexcept;
+
 #ifndef NDEBUG
   bool may_change_value_state() const noexcept { return !generating_branch; }
 #endif
@@ -428,10 +558,14 @@ public:
 
   void move_to_phi_nodes_impl(BlockIndex target) noexcept;
 
+  /// Whether branch to a block requires additional instructions and therefore
+  /// a direct jump to the block is not possible.
   bool branch_needs_split(IRBlockRef target) noexcept {
     // for now, if the target has PHI-nodes, we split
     return analyzer.block_has_phis(target);
   }
+
+  /// @}
 
   BlockIndex next_block() const noexcept;
 
@@ -448,6 +582,7 @@ public:
         text_writer.get_sec_ref(), sym, type, offset, addend);
   }
 
+  /// Convenience function to place a label at the current position.
   void label_place(Label label) noexcept {
     this->text_writer.label_place(label, text_writer.offset());
   }
@@ -472,7 +607,7 @@ template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
 template <typename CBDerived>
 void CompilerBase<Adaptor, Derived, Config>::CallBuilderBase<
     CBDerived>::add_arg(ValuePart &&vp, CCAssignment cca) noexcept {
-  if (!cca.byval) {
+  if (!cca.byval && cca.bank == RegBank{}) {
     cca.bank = vp.bank();
     cca.size = vp.part_size();
   }
@@ -516,6 +651,11 @@ void CompilerBase<Adaptor, Derived, Config>::CallBuilderBase<
         } else {
           compiler.mov(cca.reg, vp_reg, size);
         }
+      } else if (needs_ext && vp.is_const()) {
+        u64 val = vp.const_data()[0];
+        u64 extended =
+            ext_sign ? util::sext(val, ext_bits) : util::zext(val, ext_bits);
+        compiler.materialize_constant(&extended, cca.bank, 8, cca.reg);
       } else {
         vp.reload_into_specific_fixed(&compiler, cca.reg);
         if (needs_ext) {
@@ -549,22 +689,8 @@ void CompilerBase<Adaptor, Derived, Config>::CallBuilderBase<
     return;
   }
 
-  u32 align = 1;
-  bool consecutive = false;
-  u32 consec_def = 0;
-  if (compiler.arg_is_int128(arg.value)) {
-    // TODO: this also applies to composites with 16-byte alignment
-    align = 16;
-    consecutive = true;
-  } else if (part_count > 1 &&
-             !compiler.arg_allow_split_reg_stack_passing(arg.value)) {
-    consecutive = true;
-    if (part_count > UINT8_MAX) {
-      // Must be completely passed on the stack.
-      consecutive = false;
-      consec_def = -1;
-    }
-  }
+  u32 align = arg.byval_align;
+  bool allow_split = arg.flag == CallArg::Flag::allow_split;
 
   for (u32 part_idx = 0; part_idx < part_count; ++part_idx) {
     u8 int_ext = 0;
@@ -572,15 +698,14 @@ void CompilerBase<Adaptor, Derived, Config>::CallBuilderBase<
       assert(arg.ext_bits != 0 && "cannot extend zero-bit integer");
       int_ext = arg.ext_bits | (arg.flag == CallArg::Flag::sext ? 0x80 : 0);
     }
-    derived()->add_arg(
-        vr.part(part_idx),
-        CCAssignment{
-            .consecutive =
-                u8(consecutive ? part_count - part_idx - 1 : consec_def),
-            .sret = arg.flag == CallArg::Flag::sret,
-            .int_ext = int_ext,
-            .align = u8(part_idx == 0 ? align : 1),
-        });
+    u32 remaining = part_count < 256 ? part_count - part_idx - 1 : 255;
+    derived()->add_arg(vr.part(part_idx),
+                       CCAssignment{
+                           .consecutive = u8(allow_split ? 0 : remaining),
+                           .sret = arg.flag == CallArg::Flag::sret,
+                           .int_ext = int_ext,
+                           .align = u8(part_idx == 0 ? align : 1),
+                       });
   }
 }
 
@@ -588,6 +713,8 @@ template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
 template <typename CBDerived>
 void CompilerBase<Adaptor, Derived, Config>::CallBuilderBase<CBDerived>::call(
     std::variant<SymRef, ValuePart> target) noexcept {
+  assert(!compiler.stack.is_leaf_function && "leaf func must not have calls");
+  compiler.stack.generated_call = true;
   typename RegisterFile::RegBitSet skip_evict = arg_regs;
   if (auto *vp = std::get_if<ValuePart>(&target); vp && vp->can_salvage()) {
     // call_impl will reset vp, thereby unlock+free the register.
@@ -699,6 +826,7 @@ void CompilerBase<Adaptor, Derived, Config>::RetBuilder::ret() noexcept {
 template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
 bool CompilerBase<Adaptor, Derived, Config>::compile() {
   // create function symbols
+  text_writer.begin_module(assembler);
   text_writer.switch_section(
       assembler.get_section(assembler.get_text_section()));
 
@@ -748,6 +876,7 @@ bool CompilerBase<Adaptor, Derived, Config>::compile() {
   }
 
   text_writer.flush();
+  text_writer.end_module();
   assembler.finalize();
 
   // TODO(ts): generate object/map?
@@ -892,7 +1021,9 @@ void CompilerBase<Adaptor, Derived, Config>::free_assignment(
 #endif
 
   // variable references do not have a stack slot
-  if (!is_var_ref && assignment->frame_off != 0) {
+  bool has_stack = Config::FRAME_INDEXING_NEGATIVE ? assignment->frame_off < 0
+                                                   : assignment->frame_off != 0;
+  if (!is_var_ref && has_stack) {
     free_stack_slot(assignment->frame_off, assignment->size());
   }
 
@@ -946,6 +1077,7 @@ void CompilerBase<Adaptor, Derived, Config>::init_variable_ref(
 template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
 i32 CompilerBase<Adaptor, Derived, Config>::allocate_stack_slot(
     u32 size) noexcept {
+  this->stack.frame_used = true;
   unsigned align_bits = 4;
   if (size == 0) {
     return 0; // 0 is the "invalid" stack slot
@@ -1011,18 +1143,22 @@ void CompilerBase<Adaptor, Derived, Config>::free_stack_slot(
 }
 
 template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
-template <typename Fn>
-void CompilerBase<Adaptor, Derived, Config>::handle_func_arg(
-    u32 arg_idx, IRValueRef arg, Fn add_arg) noexcept {
+void CompilerBase<Adaptor, Derived, Config>::prologue_assign_arg(
+    CCAssigner *cc_assigner,
+    u32 arg_idx,
+    IRValueRef arg,
+    u32 align,
+    bool allow_split) noexcept {
   ValueRef vr = derived()->result_ref(arg);
   if (adaptor->cur_arg_is_byval(arg_idx)) {
+    CCAssignment cca{
+        .byval = true,
+        .align = u8(adaptor->cur_arg_byval_align(arg_idx)),
+        .size = adaptor->cur_arg_byval_size(arg_idx),
+    };
+    cc_assigner->assign_arg(cca);
     std::optional<i32> byval_frame_off =
-        add_arg(vr.part(0),
-                CCAssignment{
-                    .byval = true,
-                    .align = u8(adaptor->cur_arg_byval_align(arg_idx)),
-                    .size = adaptor->cur_arg_byval_size(arg_idx),
-                });
+        derived()->prologue_assign_arg_part(vr.part(0), cca);
 
     if (byval_frame_off) {
       // We need to convert the assignment into a stack variable ref.
@@ -1044,36 +1180,27 @@ void CompilerBase<Adaptor, Derived, Config>::handle_func_arg(
   }
 
   if (adaptor->cur_arg_is_sret(arg_idx)) {
-    add_arg(vr.part(0), CCAssignment{.sret = true});
+    assert(vr.assignment()->part_count == 1 && "sret must be single-part");
+    ValuePartRef vp = vr.part(0);
+    CCAssignment cca{
+        .sret = true, .bank = vp.bank(), .size = Config::PLATFORM_POINTER_SIZE};
+    cc_assigner->assign_arg(cca);
+    derived()->prologue_assign_arg_part(std::move(vp), cca);
     return;
   }
 
   const u32 part_count = vr.assignment()->part_count;
-
-  u32 align = 1;
-  u32 consecutive = 0;
-  u32 consec_def = 0;
-  if (derived()->arg_is_int128(arg)) {
-    // TODO: this also applies to composites with 16-byte alignment
-    align = 16;
-    consecutive = 1;
-  } else if (part_count > 1 &&
-             !derived()->arg_allow_split_reg_stack_passing(arg)) {
-    consecutive = 1;
-    if (part_count > UINT8_MAX) {
-      // Must be completely passed on the stack.
-      consecutive = 0;
-      consec_def = -1;
-    }
-  }
-
   for (u32 part_idx = 0; part_idx < part_count; ++part_idx) {
-    add_arg(vr.part(part_idx),
-            CCAssignment{
-                .consecutive =
-                    u8(consecutive ? part_count - part_idx - 1 : consec_def),
-                .align = u8(part_idx == 0 ? align : 1),
-            });
+    ValuePartRef vp = vr.part(part_idx);
+    u32 remaining = part_count < 256 ? part_count - part_idx - 1 : 255;
+    CCAssignment cca{
+        .consecutive = u8(allow_split ? 0 : remaining),
+        .align = u8(part_idx == 0 ? align : 1),
+        .bank = vp.bank(),
+        .size = vp.part_size(),
+    };
+    cc_assigner->assign_arg(cca);
+    derived()->prologue_assign_arg_part(std::move(vp), cca);
   }
 }
 
@@ -1118,6 +1245,73 @@ std::pair<typename CompilerBase<Adaptor, Derived, Config>::ValueRef,
   std::pair<ValueRef, ValuePartRef> res{result_ref(value), this};
   res.second = res.first.part(0);
   return res;
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+typename CompilerBase<Adaptor, Derived, Config>::ValueRef
+    CompilerBase<Adaptor, Derived, Config>::result_ref_alias(
+        IRValueRef dst, ValueRef &&src) noexcept {
+  const ValLocalIdx local_idx = analyzer.adaptor->val_local_idx(dst);
+  assert(!val_assignment(local_idx) && "alias target already defined");
+  assert(src.has_assignment() && "alias src must have an assignment");
+  // Consider implementing aliases where multiple values share the same
+  // assignment, e.g. for implementing trunc as a no-op sharing registers. Live
+  // ranges can be merged and reference counts added. However, this needs
+  // additional infrastructure to clear one of the value_ptrs.
+  assert(src.is_owned() && "alias src must be owned");
+
+  ValueAssignment *assignment = src.assignment();
+  u32 part_count = assignment->part_count;
+  assert(!assignment->pending_free);
+  assert(!assignment->variable_ref);
+  assert(!assignment->pending_free);
+#ifndef NDEBUG
+  {
+    const auto &src_liveness = analyzer.liveness_info(src.local_idx());
+    assert(!src_liveness.last_full);          // implied by is_owned()
+    assert(assignment->references_left == 1); // implied by is_owned()
+
+    // Validate that part configuration is identical.
+    const auto parts = derived()->val_parts(dst);
+    assert(parts.count() == part_count);
+    for (u32 part_idx = 0; part_idx < part_count; ++part_idx) {
+      AssignmentPartRef ap{assignment, part_idx};
+      assert(parts.reg_bank(part_idx) == ap.bank());
+      assert(parts.size_bytes(part_idx) == ap.part_size());
+    }
+  }
+#endif
+
+  // Update local_idx of registers.
+  for (u32 part_idx = 0; part_idx < part_count; ++part_idx) {
+    AssignmentPartRef ap{assignment, part_idx};
+    if (ap.register_valid()) {
+      register_file.update_reg_assignment(ap.get_reg(), local_idx, part_idx);
+    }
+  }
+
+  const auto &liveness = analyzer.liveness_info(local_idx);
+  assignment->delay_free = liveness.last_full;
+  assignment->references_left = liveness.ref_count;
+  assignments.value_ptrs[static_cast<u32>(src.local_idx())] = nullptr;
+  assignments.value_ptrs[static_cast<u32>(local_idx)] = assignment;
+  src.disown();
+  src.reset();
+
+  return ValueRef{this, local_idx};
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+typename CompilerBase<Adaptor, Derived, Config>::ValueRef
+    CompilerBase<Adaptor, Derived, Config>::result_ref_stack_slot(
+        IRValueRef dst, AssignmentPartRef base, i32 off) noexcept {
+  const ValLocalIdx local_idx = analyzer.adaptor->val_local_idx(dst);
+  assert(!val_assignment(local_idx) && "new value already defined");
+  init_variable_ref(local_idx, 0);
+  ValueAssignment *assignment = this->val_assignment(local_idx);
+  assignment->stack_variable = true;
+  assignment->frame_off = base.variable_stack_off() + off;
+  return ValueRef{this, local_idx};
 }
 
 template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
@@ -1461,6 +1655,215 @@ void CompilerBase<Adaptor, Derived, Config>::
 }
 
 template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+template <typename Jump>
+void CompilerBase<Adaptor, Derived, Config>::generate_branch_to_block(
+    Jump jmp, IRBlockRef target, bool needs_split, bool last_inst) noexcept {
+  BlockIndex target_idx = this->analyzer.block_idx(target);
+  Label target_label = this->block_labels[u32(target_idx)];
+  if (!needs_split) {
+    move_to_phi_nodes(target_idx);
+    if (!last_inst || target_idx != this->next_block()) {
+      derived()->generate_raw_jump(jmp, target_label);
+    }
+  } else {
+    Label tmp_label = this->text_writer.label_create();
+    derived()->generate_raw_jump(derived()->invert_jump(jmp), tmp_label);
+    move_to_phi_nodes(target_idx);
+    derived()->generate_raw_jump(Jump::jmp, target_label);
+    this->label_place(tmp_label);
+  }
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+void CompilerBase<Adaptor, Derived, Config>::generate_uncond_branch(
+    IRBlockRef target) noexcept {
+  auto spilled = spill_before_branch();
+  begin_branch_region();
+
+  generate_branch_to_block(Derived::Jump::jmp, target, false, true);
+
+  end_branch_region();
+  release_spilled_regs(spilled);
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+template <typename Jump>
+void CompilerBase<Adaptor, Derived, Config>::generate_cond_branch(
+    Jump jmp, IRBlockRef true_target, IRBlockRef false_target) noexcept {
+  IRBlockRef next = analyzer.block_ref(next_block());
+
+  bool true_needs_split = branch_needs_split(true_target);
+  bool false_needs_split = branch_needs_split(false_target);
+
+  auto spilled = spill_before_branch();
+  begin_branch_region();
+
+  if (next == true_target || (next != false_target && true_needs_split)) {
+    generate_branch_to_block(
+        derived()->invert_jump(jmp), false_target, false_needs_split, false);
+    generate_branch_to_block(Derived::Jump::jmp, true_target, false, true);
+  } else if (next == false_target) {
+    generate_branch_to_block(jmp, true_target, true_needs_split, false);
+    generate_branch_to_block(Derived::Jump::jmp, false_target, false, true);
+  } else {
+    assert(!true_needs_split);
+    generate_branch_to_block(jmp, true_target, false, false);
+    generate_branch_to_block(Derived::Jump::jmp, false_target, false, true);
+  }
+
+  end_branch_region();
+  release_spilled_regs(spilled);
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
+void CompilerBase<Adaptor, Derived, Config>::generate_switch(
+    ScratchReg &&cond,
+    u32 width,
+    IRBlockRef default_block,
+    std::span<const std::pair<u64, IRBlockRef>> cases) noexcept {
+  // This function takes cond as a ScratchReg as opposed to a ValuePart, because
+  // the ValueRef for the condition must be ref-counted before we enter the
+  // branch region.
+
+  assert(width <= 64);
+  // We don't support sections with more than 4 GiB, so switches with more than
+  // 4G cases are impossible to support.
+  assert(cases.size() < UINT32_MAX && "large switches are unsupported");
+
+  AsmReg cmp_reg = cond.cur_reg();
+  bool width_is_32 = width <= 32;
+  if (u32 dst_width = util::align_up(width, 32); width != dst_width) {
+    derived()->generate_raw_intext(cmp_reg, cmp_reg, false, width, dst_width);
+  }
+
+  // We must not evict any registers in the branching code, as we don't track
+  // the individual value states per block. Hence, we must not allocate any
+  // registers (e.g., for constants, jump table address) below.
+  ScratchReg tmp_scratch{this};
+  AsmReg tmp_reg = tmp_scratch.alloc_gp();
+
+  const auto spilled = this->spill_before_branch();
+  this->begin_branch_region();
+
+  tpde::util::SmallVector<tpde::Label, 64> case_labels;
+  // Labels that need an intermediate block to setup registers. This is
+  // separate, because most switch targets don't need this.
+  tpde::util::SmallVector<std::pair<tpde::Label, IRBlockRef>, 64> case_blocks;
+  for (auto i = 0u; i < cases.size(); ++i) {
+    // If the target might need additional register moves, we can't branch there
+    // immediately.
+    // TODO: more precise condition?
+    BlockIndex target = this->analyzer.block_idx(cases[i].second);
+    if (analyzer.block_has_phis(target)) {
+      case_labels.push_back(this->text_writer.label_create());
+      case_blocks.emplace_back(case_labels.back(), cases[i].second);
+    } else {
+      case_labels.push_back(this->block_labels[u32(target)]);
+    }
+  }
+
+  const auto default_label = this->text_writer.label_create();
+
+  const auto build_range = [&,
+                            this](size_t begin, size_t end, const auto &self) {
+    assert(begin <= end);
+    const auto num_cases = end - begin;
+    if (num_cases <= 4) {
+      // if there are four or less cases we just compare the values
+      // against each of them
+      for (auto i = 0u; i < num_cases; ++i) {
+        derived()->switch_emit_cmpeq(case_labels[begin + i],
+                                     cmp_reg,
+                                     tmp_reg,
+                                     cases[begin + i].first,
+                                     width_is_32);
+      }
+
+      derived()->generate_raw_jump(Derived::Jump::jmp, default_label);
+      return;
+    }
+
+    // check if the density of the values is high enough to warrant building
+    // a jump table
+    auto range = cases[end - 1].first - cases[begin].first;
+    // we will get wrong results if range is -1 so skip the jump table if
+    // that is the case
+    if (range != 0xFFFF'FFFF'FFFF'FFFF && (range / num_cases) < 8) {
+      // for gcc, it seems that if there are less than 8 values per
+      // case it will build a jump table so we do that, too
+
+      // the actual range is one greater than the result we get from
+      // subtracting so adjust for that
+      range += 1;
+
+      tpde::util::SmallVector<tpde::Label, 32> label_vec;
+      std::span<tpde::Label> labels;
+      if (range == num_cases) {
+        labels = std::span{case_labels.begin() + begin, num_cases};
+      } else {
+        label_vec.resize(range, default_label);
+        for (auto i = 0u; i < num_cases; ++i) {
+          label_vec[cases[begin + i].first - cases[begin].first] =
+              case_labels[begin + i];
+        }
+        labels = std::span{label_vec.begin(), range};
+      }
+
+      // Give target the option to emit a jump table.
+      if (derived()->switch_emit_jump_table(default_label,
+                                            labels,
+                                            cmp_reg,
+                                            tmp_reg,
+                                            cases[begin].first,
+                                            cases[end - 1].first,
+                                            width_is_32)) {
+        return;
+      }
+    }
+
+    // do a binary search step
+    const auto half_len = num_cases / 2;
+    const auto half_value = cases[begin + half_len].first;
+    const auto gt_label = this->text_writer.label_create();
+
+    // this will cmp against the input value, jump to the case if it is
+    // equal or to gt_label if the value is greater. Otherwise it will
+    // fall-through
+    derived()->switch_emit_binary_step(case_labels[begin + half_len],
+                                       gt_label,
+                                       cmp_reg,
+                                       tmp_reg,
+                                       half_value,
+                                       width_is_32);
+    // search the lower half
+    self(begin, begin + half_len, self);
+
+    // and the upper half
+    this->label_place(gt_label);
+    self(begin + half_len + 1, end, self);
+  };
+
+  build_range(0, case_labels.size(), build_range);
+
+  // write out the labels
+  this->label_place(default_label);
+  derived()->generate_branch_to_block(
+      Derived::Jump::jmp, default_block, false, false);
+
+  for (const auto &[label, target] : case_blocks) {
+    // Branch predictors typically have problems if too many branches follow too
+    // closely. Ensure a minimum alignment.
+    this->text_writer.align(8);
+    this->label_place(label);
+    derived()->generate_branch_to_block(
+        Derived::Jump::jmp, target, false, false);
+  }
+
+  this->end_branch_region();
+  this->release_spilled_regs(spilled);
+}
+
+template <IRAdaptor Adaptor, typename Derived, CompilerConfig Config>
 void CompilerBase<Adaptor, Derived, Config>::move_to_phi_nodes_impl(
     BlockIndex target) noexcept {
   // PHI-nodes are always moved to their stack-slot (unless they are fixed)
@@ -1598,9 +2001,6 @@ void CompilerBase<Adaptor, Derived, Config>::move_to_phi_nodes_impl(
   ScratchWrapper scratch{derived()};
   const auto move_to_phi = [this, &scratch](IRValueRef phi,
                                             IRValueRef incoming_val) {
-    // TODO(ts): if phi==incoming_val, we should be able to elide the move
-    // even if the phi is in a fixed register, no?
-
     auto phi_vr = derived()->result_ref(phi);
     auto val_vr = derived()->val_ref(incoming_val);
     if (phi == incoming_val) {
@@ -1610,23 +2010,20 @@ void CompilerBase<Adaptor, Derived, Config>::move_to_phi_nodes_impl(
     u32 part_count = phi_vr.assignment()->part_count;
     for (u32 i = 0; i < part_count; ++i) {
       AssignmentPartRef phi_ap{phi_vr.assignment(), i};
-
-      AsmReg reg{};
       ValuePartRef val_vpr = val_vr.part(i);
-      if (val_vpr.is_const()) {
-        reg = scratch.alloc_from_bank(val_vpr.bank());
-        val_vpr.reload_into_specific_fixed(reg);
-      } else if (val_vpr.assignment().register_valid() ||
-                 val_vpr.assignment().fixed_assignment()) {
-        reg = val_vpr.assignment().get_reg();
-      } else {
-        reg = val_vpr.reload_into_specific_fixed(
-            this, scratch.alloc_from_bank(phi_ap.bank()));
-      }
 
       if (phi_ap.fixed_assignment()) {
-        derived()->mov(phi_ap.get_reg(), reg, phi_ap.part_size());
+        if (AsmReg reg = val_vpr.cur_reg_unlocked(); reg.valid()) {
+          derived()->mov(phi_ap.get_reg(), reg, phi_ap.part_size());
+        } else {
+          val_vpr.reload_into_specific_fixed(phi_ap.get_reg());
+        }
       } else {
+        AsmReg reg = val_vpr.cur_reg_unlocked();
+        if (!reg.valid()) {
+          reg = scratch.alloc_from_bank(val_vpr.bank());
+          val_vpr.reload_into_specific_fixed(reg);
+        }
         allocate_spill_slot(phi_ap);
         derived()->spill_reg(reg, phi_ap.frame_off(), phi_ap.part_size());
         phi_ap.set_stack_valid();
@@ -1882,6 +2279,11 @@ bool CompilerBase<Adaptor, Derived, Config>::compile_func(
     e.clear();
   }
   stack.dynamic_free_lists.clear();
+  // TODO: sort out the inconsistency about adaptor vs. compiler methods.
+  stack.has_dynamic_alloca = this->adaptor->cur_has_dynamic_alloca();
+  stack.is_leaf_function = !derived()->cur_func_may_emit_calls();
+  stack.generated_call = false;
+  stack.frame_used = false;
 
   assignments.cur_fixed_assignment_count = {};
   assert(std::ranges::none_of(assignments.value_ptrs, std::identity{}));
@@ -1905,7 +2307,7 @@ bool CompilerBase<Adaptor, Derived, Config>::compile_func(
 
   // Simple heuristic for initial allocation size
   u32 expected_code_size = 0x8 * analyzer.num_insts + 0x40;
-  this->text_writer.begin_func(expected_code_size);
+  this->text_writer.begin_func(/*alignment=*/16, expected_code_size);
 
   derived()->start_func(func_idx);
 
@@ -1923,10 +2325,25 @@ bool CompilerBase<Adaptor, Derived, Config>::compile_func(
 
   register_file.allocatable = cc_assigner->get_ccinfo().allocatable_regs;
 
-  // This initializes the stack frame, which must reserve space for
-  // callee-saved registers, vararg save area, etc.
   cc_assigner->reset();
-  derived()->gen_func_prolog_and_args(cc_assigner);
+  // Temporarily prevent argument registers from being assigned.
+  const CCInfo &cc_info = cc_assigner->get_ccinfo();
+  assert((cc_info.allocatable_regs & cc_info.arg_regs) == cc_info.arg_regs &&
+         "argument registers must also be allocatable");
+  this->register_file.allocatable &= ~cc_info.arg_regs;
+
+  // Begin prologue, prepare for handling arguments.
+  derived()->prologue_begin(cc_assigner);
+  u32 arg_idx = 0;
+  for (const IRValueRef arg : this->adaptor->cur_args()) {
+    // Init assignment for all arguments. This can be substituted for more
+    // complex mappings of arguments to value parts.
+    derived()->prologue_assign_arg(cc_assigner, arg_idx++, arg);
+  }
+  // Finish prologue, storing relevant data from the argument cc_assigner.
+  derived()->prologue_end(cc_assigner);
+
+  this->register_file.allocatable |= cc_info.arg_regs;
 
   for (const IRValueRef alloca : adaptor->cur_static_allocas()) {
     auto size = adaptor->val_alloca_size(alloca);

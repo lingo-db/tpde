@@ -10,8 +10,6 @@ define void @urem_v1i8(ptr %p, ptr %q) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    movzx eax, byte ptr [rdi]
 ; X64-NEXT:    movzx ecx, byte ptr [rsi]
 ; X64-NEXT:    movzx eax, al
@@ -22,25 +20,18 @@ define void @urem_v1i8(ptr %p, ptr %q) {
 ; X64-NEXT:    mov eax, ebx
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov byte ptr [rdi], dl
-; X64-NEXT:    add rsp, 0x28
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v1i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrb w2, [x0]
+; ARM64:         ldrb w2, [x0]
 ; ARM64-NEXT:    ldrb w3, [x1]
 ; ARM64-NEXT:    uxtb w2, w2
 ; ARM64-NEXT:    uxtb w3, w3
 ; ARM64-NEXT:    udiv w1, w2, w3
 ; ARM64-NEXT:    msub w3, w1, w3, w2
 ; ARM64-NEXT:    strb w3, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %a = load <1 x i8>, ptr %p
   %b = load <1 x i8>, ptr %q
@@ -56,8 +47,6 @@ define void @urem_v5i8(ptr %p, ptr %q) {
 ; X64-NEXT:    push rbx
 ; X64-NEXT:    push r12
 ; X64-NEXT:    push r13
-; X64-NEXT:    nop dword ptr [rax]
-; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    movzx eax, byte ptr [rdi]
 ; X64-NEXT:    movzx ecx, byte ptr [rdi + 0x1]
 ; X64-NEXT:    movzx edx, byte ptr [rdi + 0x2]
@@ -110,7 +99,6 @@ define void @urem_v5i8(ptr %p, ptr %q) {
 ; X64-NEXT:    movzx eax, byte ptr [rbp - 0x35]
 ; X64-NEXT:    mov byte ptr [rdi + 0x3], al
 ; X64-NEXT:    mov byte ptr [rdi + 0x4], dl
-; X64-NEXT:    add rsp, 0x28
 ; X64-NEXT:    pop r13
 ; X64-NEXT:    pop r12
 ; X64-NEXT:    pop rbx
@@ -118,11 +106,7 @@ define void @urem_v5i8(ptr %p, ptr %q) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v5i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrb w2, [x0]
+; ARM64:         ldrb w2, [x0]
 ; ARM64-NEXT:    ldrb w3, [x0, #0x1]
 ; ARM64-NEXT:    ldrb w4, [x0, #0x2]
 ; ARM64-NEXT:    ldrb w5, [x0, #0x3]
@@ -157,8 +141,6 @@ define void @urem_v5i8(ptr %p, ptr %q) {
 ; ARM64-NEXT:    strb w9, [x0, #0x2]
 ; ARM64-NEXT:    strb w10, [x0, #0x3]
 ; ARM64-NEXT:    strb w11, [x0, #0x4]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %a = load <5 x i8>, ptr %p
   %b = load <5 x i8>, ptr %q
@@ -172,8 +154,6 @@ define <8 x i8> @urem_v8i8(<8 x i8> %a, <8 x i8> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    movq qword ptr [rbp - 0x30], xmm0
 ; X64-NEXT:    movzx eax, byte ptr [rbp - 0x30]
 ; X64-NEXT:    movq qword ptr [rbp - 0x38], xmm1
@@ -257,17 +237,12 @@ define <8 x i8> @urem_v8i8(<8 x i8> %a, <8 x i8> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov byte ptr [rbp - 0x39], dl
 ; X64-NEXT:    movq xmm0, qword ptr [rbp - 0x40]
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v8i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    umov w0, v0.b[0]
+; ARM64:         umov w0, v0.b[0]
 ; ARM64-NEXT:    umov w1, v1.b[0]
 ; ARM64-NEXT:    uxtb w0, w0
 ; ARM64-NEXT:    uxtb w1, w1
@@ -324,8 +299,6 @@ define <8 x i8> @urem_v8i8(<8 x i8> %a, <8 x i8> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.b[7], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <8 x i8> %a, %b
   ret <8 x i8> %r
@@ -336,8 +309,6 @@ define <16 x i8> @urem_v16i8(<16 x i8> %a, <16 x i8> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x58
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x40], xmm0
 ; X64-NEXT:    movzx eax, byte ptr [rbp - 0x40]
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x50], xmm1
@@ -501,17 +472,12 @@ define <16 x i8> @urem_v16i8(<16 x i8> %a, <16 x i8> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov byte ptr [rbp - 0x51], dl
 ; X64-NEXT:    movapd xmm0, xmmword ptr [rbp - 0x60]
-; X64-NEXT:    add rsp, 0x58
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v16i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    umov w0, v0.b[0]
+; ARM64:         umov w0, v0.b[0]
 ; ARM64-NEXT:    umov w1, v1.b[0]
 ; ARM64-NEXT:    uxtb w0, w0
 ; ARM64-NEXT:    uxtb w1, w1
@@ -624,8 +590,6 @@ define <16 x i8> @urem_v16i8(<16 x i8> %a, <16 x i8> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.b[15], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <16 x i8> %a, %b
   ret <16 x i8> %r
@@ -636,7 +600,6 @@ define void @urem_v32i8(ptr %p, ptr %q) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x88
 ; X64-NEXT:    movups xmm0, xmmword ptr [rdi]
 ; X64-NEXT:    movups xmm1, xmmword ptr [rdi + 0x10]
@@ -976,11 +939,7 @@ define void @urem_v32i8(ptr %p, ptr %q) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v32i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldr q0, [x0]
+; ARM64:         ldr q0, [x0]
 ; ARM64-NEXT:    ldr q1, [x0, #0x10]
 ; ARM64-NEXT:    ldr q2, [x1]
 ; ARM64-NEXT:    ldr q3, [x1, #0x10]
@@ -1210,8 +1169,6 @@ define void @urem_v32i8(ptr %p, ptr %q) {
 ; ARM64-NEXT:    mov v5.b[15], w2
 ; ARM64-NEXT:    str q4, [x0]
 ; ARM64-NEXT:    str q5, [x0, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %a = load <32 x i8>, ptr %p
   %b = load <32 x i8>, ptr %q
@@ -1225,8 +1182,6 @@ define <4 x i16> @urem_v4i16(<4 x i16> %a, <4 x i16> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    movq qword ptr [rbp - 0x30], xmm0
 ; X64-NEXT:    movzx eax, word ptr [rbp - 0x30]
 ; X64-NEXT:    movq qword ptr [rbp - 0x38], xmm1
@@ -1270,17 +1225,12 @@ define <4 x i16> @urem_v4i16(<4 x i16> %a, <4 x i16> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov word ptr [rbp - 0x3a], dx
 ; X64-NEXT:    movq xmm0, qword ptr [rbp - 0x40]
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v4i16>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    umov w0, v0.h[0]
+; ARM64:         umov w0, v0.h[0]
 ; ARM64-NEXT:    umov w1, v1.h[0]
 ; ARM64-NEXT:    uxth w0, w0
 ; ARM64-NEXT:    uxth w1, w1
@@ -1309,8 +1259,6 @@ define <4 x i16> @urem_v4i16(<4 x i16> %a, <4 x i16> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.h[3], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <4 x i16> %a, %b
   ret <4 x i16> %r
@@ -1321,8 +1269,6 @@ define <8 x i16> @urem_v8i16(<8 x i16> %a, <8 x i16> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x58
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x40], xmm0
 ; X64-NEXT:    movzx eax, word ptr [rbp - 0x40]
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x50], xmm1
@@ -1406,17 +1352,12 @@ define <8 x i16> @urem_v8i16(<8 x i16> %a, <8 x i16> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov word ptr [rbp - 0x52], dx
 ; X64-NEXT:    movapd xmm0, xmmword ptr [rbp - 0x60]
-; X64-NEXT:    add rsp, 0x58
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v8i16>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    umov w0, v0.h[0]
+; ARM64:         umov w0, v0.h[0]
 ; ARM64-NEXT:    umov w1, v1.h[0]
 ; ARM64-NEXT:    uxth w0, w0
 ; ARM64-NEXT:    uxth w1, w1
@@ -1473,8 +1414,6 @@ define <8 x i16> @urem_v8i16(<8 x i16> %a, <8 x i16> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.h[7], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <8 x i16> %a, %b
   ret <8 x i16> %r
@@ -1485,8 +1424,6 @@ define <2 x i32> @urem_v2i32(<2 x i32> %a, <2 x i32> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    movq qword ptr [rbp - 0x30], xmm0
 ; X64-NEXT:    mov eax, dword ptr [rbp - 0x30]
 ; X64-NEXT:    movq qword ptr [rbp - 0x38], xmm1
@@ -1506,17 +1443,12 @@ define <2 x i32> @urem_v2i32(<2 x i32> %a, <2 x i32> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov dword ptr [rbp - 0x3c], edx
 ; X64-NEXT:    movq xmm0, qword ptr [rbp - 0x40]
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v2i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov w0, v0.s[0]
+; ARM64:         mov w0, v0.s[0]
 ; ARM64-NEXT:    mov w1, v1.s[0]
 ; ARM64-NEXT:    udiv w2, w0, w1
 ; ARM64-NEXT:    msub w1, w2, w1, w0
@@ -1527,8 +1459,6 @@ define <2 x i32> @urem_v2i32(<2 x i32> %a, <2 x i32> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.s[1], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <2 x i32> %a, %b
   ret <2 x i32> %r
@@ -1539,8 +1469,6 @@ define <4 x i32> @urem_v4i32(<4 x i32> %a, <4 x i32> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x58
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x40], xmm0
 ; X64-NEXT:    mov eax, dword ptr [rbp - 0x40]
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x50], xmm1
@@ -1576,17 +1504,12 @@ define <4 x i32> @urem_v4i32(<4 x i32> %a, <4 x i32> %b) {
 ; X64-NEXT:    div ecx
 ; X64-NEXT:    mov dword ptr [rbp - 0x54], edx
 ; X64-NEXT:    movapd xmm0, xmmword ptr [rbp - 0x60]
-; X64-NEXT:    add rsp, 0x58
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v4i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov w0, v0.s[0]
+; ARM64:         mov w0, v0.s[0]
 ; ARM64-NEXT:    mov w1, v1.s[0]
 ; ARM64-NEXT:    udiv w2, w0, w1
 ; ARM64-NEXT:    msub w1, w2, w1, w0
@@ -1607,8 +1530,6 @@ define <4 x i32> @urem_v4i32(<4 x i32> %a, <4 x i32> %b) {
 ; ARM64-NEXT:    msub w1, w2, w1, w0
 ; ARM64-NEXT:    mov v2.s[3], w1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <4 x i32> %a, %b
   ret <4 x i32> %r
@@ -1619,8 +1540,6 @@ define <2 x i64> @urem_v2i64(<2 x i64> %a, <2 x i64> %b) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x58
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x40], xmm0
 ; X64-NEXT:    mov rax, qword ptr [rbp - 0x40]
 ; X64-NEXT:    movapd xmmword ptr [rbp - 0x50], xmm1
@@ -1640,17 +1559,12 @@ define <2 x i64> @urem_v2i64(<2 x i64> %a, <2 x i64> %b) {
 ; X64-NEXT:    div rcx
 ; X64-NEXT:    mov qword ptr [rbp - 0x58], rdx
 ; X64-NEXT:    movapd xmm0, xmmword ptr [rbp - 0x60]
-; X64-NEXT:    add rsp, 0x58
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <urem_v2i64>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x0, v0.d[0]
+; ARM64:         mov x0, v0.d[0]
 ; ARM64-NEXT:    mov x1, v1.d[0]
 ; ARM64-NEXT:    udiv x2, x0, x1
 ; ARM64-NEXT:    msub x1, x2, x1, x0
@@ -1661,8 +1575,6 @@ define <2 x i64> @urem_v2i64(<2 x i64> %a, <2 x i64> %b) {
 ; ARM64-NEXT:    msub x1, x2, x1, x0
 ; ARM64-NEXT:    mov v2.d[1], x1
 ; ARM64-NEXT:    mov v0.16b, v2.16b
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = urem <2 x i64> %a, %b
   ret <2 x i64> %r

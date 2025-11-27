@@ -280,7 +280,7 @@ public:
   /// Move into a scratch register, reuse an existing register if possible.
   ScratchReg into_scratch(CompilerBase *compiler) && noexcept {
     // TODO: implement this. This needs size information to copy the value.
-    assert((has_assignment() || state.c.owned) &&
+    assert((has_assignment() || state.c.owned || state.c.is_const) &&
            "into_scratch from unowned ValuePart not implemented");
     ScratchReg res{compiler};
     if (can_salvage()) {
@@ -626,6 +626,13 @@ void CompilerBase<Adaptor, Derived, Config>::ValuePart::set_value(
   assert(!ap.variable_ref() && "cannot update variable ref");
 
   if (ap.fixed_assignment() || !other.can_salvage()) {
+#ifndef NDEBUG
+    // alloc_reg has the assertion that stack_valid must be false to prevent
+    // accidental loss of information. set_value behaves more like an explicit
+    // assignment, so we permit this overwrite -- but need to disable the
+    // assertion.
+    ap.set_modified(true);
+#endif
     // Source value owns no register or it is not reusable: copy value
     AsmReg cur_reg = alloc_reg(compiler);
     other.reload_into_specific_fixed(compiler, cur_reg, ap.part_size());
@@ -705,6 +712,7 @@ void CompilerBase<Adaptor, Derived, Config>::ValuePart::set_value(
   reg_file.update_reg_assignment(value_reg, local_idx(), part());
   ap.set_reg(value_reg);
   ap.set_register_valid(true);
+  ap.set_modified(true);
   other.force_set_reg(AsmReg::make_invalid());
 }
 
@@ -779,6 +787,7 @@ typename CompilerBase<Adaptor, Derived, Config>::AsmReg
   assert(ap.fixed_assignment() || !compiler->register_file.is_fixed(cur_reg));
   if (ap.fixed_assignment()) {
     compiler->register_file.dec_lock_count(cur_reg); // release fixed register
+    --compiler->assignments.cur_fixed_assignment_count[ap.bank().id()];
   }
 
   ap.set_register_valid(false);
@@ -807,6 +816,9 @@ void CompilerBase<Adaptor, Derived, Config>::ValuePart::reset(
       ap.set_register_valid(false);
       ap.set_fixed_assignment(false);
       compiler->register_file.dec_lock_count_must_zero(reg, fixed ? 2 : 1);
+      if (fixed) {
+        --compiler->assignments.cur_fixed_assignment_count[ap.bank().id()];
+      }
     } else {
       compiler->register_file.unmark_fixed(reg);
     }
@@ -839,6 +851,12 @@ struct CompilerBase<Adaptor, Derived, Config>::ValuePartRef : ValuePart {
     if (this == &other) {
       return *this;
     }
+    reset();
+    ValuePart::operator=(std::move(other));
+    return *this;
+  }
+
+  ValuePartRef &operator=(ValuePart &&other) noexcept {
     reset();
     ValuePart::operator=(std::move(other));
     return *this;
@@ -880,6 +898,10 @@ struct CompilerBase<Adaptor, Derived, Config>::ValuePartRef : ValuePart {
     return ValuePartRef{
         compiler,
         std::move(*static_cast<ValuePart *>(this)).into_temporary(compiler)};
+  }
+
+  ScratchReg into_scratch() && noexcept {
+    return std::move(*static_cast<ValuePart *>(this)).into_scratch(compiler);
   }
 
   ValuePartRef into_extended(bool sign, u32 from, u32 to) && noexcept {

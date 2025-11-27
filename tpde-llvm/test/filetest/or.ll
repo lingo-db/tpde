@@ -8,23 +8,11 @@
 
 define void @or_i8_3(i8 %0) {
 ; X64-LABEL: <or_i8_3>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x3
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x3
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i8_3>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w0, w0, #0x3
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w0, w0, #0x3
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i8 %0, 3
@@ -33,24 +21,12 @@ entry:
 
 define void @or_i8_9(i8 %0) {
 ; X64-LABEL: <or_i8_9>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x9
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x9
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i8_9>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x1, #0x9 // =9
+; ARM64:         mov x1, #0x9 // =9
 ; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i8 %0, 9
@@ -59,23 +35,11 @@ entry:
 
 define void @or_i8_i8(i8 %0, i8 %1) {
 ; X64-LABEL: <or_i8_i8>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, esi
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, esi
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i8_i8>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w1, w1, w0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i8 %0, %1
@@ -84,23 +48,11 @@ entry:
 
 define void @or_i16_1ff0(i16 %0) {
 ; X64-LABEL: <or_i16_1ff0>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x1ff0
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x1ff0
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i16_1ff0>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w0, w0, #0x1ff0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w0, w0, #0x1ff0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i16 %0, u0x1ff0
@@ -109,24 +61,12 @@ entry:
 
 define void @or_i16_1ff1(i16 %0) {
 ; X64-LABEL: <or_i16_1ff1>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x1ff1
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x1ff1
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i16_1ff1>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x1, #0x1ff1 // =8177
+; ARM64:         mov x1, #0x1ff1 // =8177
 ; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i16 %0, u0x1ff1
@@ -135,23 +75,11 @@ entry:
 
 define void @or_i16_i16(i16 %0, i16 %1) {
 ; X64-LABEL: <or_i16_i16>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, esi
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, esi
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i16_i16>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w1, w1, w0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i16 %0, %1
@@ -160,23 +88,11 @@ entry:
 
 define void @or_i32_1fffff0(i32 %0) {
 ; X64-LABEL: <or_i32_1fffff0>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x1fffff0
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x1fffff0
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i32_1fffff0>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w0, w0, #0x1fffff0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w0, w0, #0x1fffff0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i32 %0, u0x1fffff0
@@ -185,25 +101,13 @@ entry:
 
 define void @or_i32_1fffff1(i32 %0) {
 ; X64-LABEL: <or_i32_1fffff1>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, 0x1fffff1
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, 0x1fffff1
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i32_1fffff1>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x1, #0xfff1 // =65521
+; ARM64:         mov x1, #0xfff1 // =65521
 ; ARM64-NEXT:    movk x1, #0x1ff, lsl #16
 ; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i32 %0, u0x1fffff1
@@ -212,23 +116,11 @@ entry:
 
 define void @or_i32_i32(i32 %0, i32 %1) {
 ; X64-LABEL: <or_i32_i32>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or edi, esi
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or edi, esi
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i32_i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr w1, w1, w0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr w1, w1, w0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i32 %0, %1
@@ -237,23 +129,11 @@ entry:
 
 define void @or_i64_fffffffffff1ffff(i64 %0) {
 ; X64-LABEL: <or_i64_fffffffffff1ffff>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, -0xe0001
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or rdi, -0xe0001
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i64_fffffffffff1ffff>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x0, x0, #0xfffffffffff1ffff
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr x0, x0, #0xfffffffffff1ffff
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i64 %0, u0xfffffffffff1ffff
@@ -262,24 +142,12 @@ entry:
 
 define void @or_i64_fffffffffff2ffff(i64 %0) {
 ; X64-LABEL: <or_i64_fffffffffff2ffff>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, -0xd0001
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or rdi, -0xd0001
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i64_fffffffffff2ffff>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x1, #-0xd0001 // =-851969
+; ARM64:         mov x1, #-0xd0001 // =-851969
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i64 %0, u0xfffffffffff2ffff
@@ -288,23 +156,11 @@ entry:
 
 define void @or_i64_i64(i64 %0, i64 %1) {
 ; X64-LABEL: <or_i64_i64>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, rsi
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or rdi, rsi
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i64_i64>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr x1, x1, x0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i64 %0, %1
@@ -313,23 +169,11 @@ entry:
 
 define void @or_i37_3(i37 %0) {
 ; X64-LABEL: <or_i37_3>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, 0x3
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or rdi, 0x3
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i37_3>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x0, x0, #0x3
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr x0, x0, #0x3
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i37 %0, 3
@@ -338,23 +182,11 @@ entry:
 
 define void @or_i37_i37(i37 %0, i37 %1) {
 ; X64-LABEL: <or_i37_i37>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, rsi
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         or rdi, rsi
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i37_i37>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         orr x1, x1, x0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i37 %0, %1
@@ -363,26 +195,14 @@ entry:
 
 define void @or_i128_3(i128 %0) {
 ; X64-LABEL: <or_i128_3>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, 0x3
+; X64:         or rdi, 0x3
 ; X64-NEXT:    or rsi, 0x0
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_3>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov w2, #0x0 // =0
+; ARM64:         mov w2, #0x0 // =0
 ; ARM64-NEXT:    orr x2, x2, x1
 ; ARM64-NEXT:    orr x0, x0, #0x3
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i128 %0, 3
@@ -391,25 +211,13 @@ entry:
 
 define void @or_i128_30000000000000003(i128 %0) {
 ; X64-LABEL: <or_i128_30000000000000003>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, 0x3
+; X64:         or rdi, 0x3
 ; X64-NEXT:    or rsi, 0x3
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_30000000000000003>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x1, x1, #0x3
+; ARM64:         orr x1, x1, #0x3
 ; ARM64-NEXT:    orr x0, x0, #0x3
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i128 %0, u0x30000000000000003
@@ -418,26 +226,14 @@ entry:
 
 define void @or_i128_90000000000000003(i128 %0) {
 ; X64-LABEL: <or_i128_90000000000000003>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, 0x3
+; X64:         or rdi, 0x3
 ; X64-NEXT:    or rsi, 0x9
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_90000000000000003>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x2, #0x9 // =9
+; ARM64:         mov x2, #0x9 // =9
 ; ARM64-NEXT:    orr x2, x2, x1
 ; ARM64-NEXT:    orr x0, x0, #0x3
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i128 %0, u0x90000000000000003
@@ -446,27 +242,15 @@ entry:
 
 define void @or_i128_90000000000000009(i128 %0) {
 ; X64-LABEL: <or_i128_90000000000000009>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, 0x9
+; X64:         or rdi, 0x9
 ; X64-NEXT:    or rsi, 0x9
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_90000000000000009>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov x2, #0x9 // =9
+; ARM64:         mov x2, #0x9 // =9
 ; ARM64-NEXT:    orr x2, x2, x1
 ; ARM64-NEXT:    mov x1, #0x9 // =9
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i128 %0, u0x90000000000000009
@@ -475,25 +259,13 @@ entry:
 
 define void @or_i128_i128(i128 %0, i128 %1) {
 ; X64-LABEL: <or_i128_i128>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    or rdi, rdx
+; X64:         or rdi, rdx
 ; X64-NEXT:    or rsi, rcx
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_i128>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x3, x3, x1
+; ARM64:         orr x3, x3, x1
 ; ARM64-NEXT:    orr x2, x2, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i128 %0, %1
@@ -502,26 +274,14 @@ entry:
 
 define void @or_i64_no_salvage_imm(i64 %0) {
 ; X64-LABEL: <or_i64_no_salvage_imm>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, rdi
+; X64:         mov rax, rdi
 ; X64-NEXT:    or rax, 0x3
 ; X64-NEXT:    or rdi, rax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i64_no_salvage_imm>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x1, x0, #0x3
+; ARM64:         orr x1, x0, #0x3
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i64 %0, 3
@@ -531,26 +291,14 @@ entry:
 
 define void @or_i64_no_salvage_reg(i64 %0, i64 %1) {
 ; X64-LABEL: <or_i64_no_salvage_reg>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, rdi
+; X64:         mov rax, rdi
 ; X64-NEXT:    or rax, rsi
 ; X64-NEXT:    or rdi, rax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i64_no_salvage_reg>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
+; ARM64:         orr x1, x1, x0
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i64 %0, %1
@@ -560,26 +308,14 @@ entry:
 
 define void @or_i37_no_salvage_imm(i37 %0) {
 ; X64-LABEL: <or_i37_no_salvage_imm>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, rdi
+; X64:         mov rax, rdi
 ; X64-NEXT:    or rax, 0x3
 ; X64-NEXT:    or rdi, rax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i37_no_salvage_imm>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    orr x1, x0, #0x3
+; ARM64:         orr x1, x0, #0x3
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i37 %0, 3
@@ -589,26 +325,14 @@ entry:
 
 define void @or_i37_no_salvage_reg(i37 %0, i37 %1) {
 ; X64-LABEL: <or_i37_no_salvage_reg>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, rdi
+; X64:         mov rax, rdi
 ; X64-NEXT:    or rax, rsi
 ; X64-NEXT:    or rdi, rax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i37_no_salvage_reg>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
+; ARM64:         orr x1, x1, x0
 ; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    orr x1, x1, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %2 = or i37 %0, %1
@@ -618,32 +342,20 @@ entry:
 
 define void @or_i128_no_salvage_imm(i128 %0) {
 ; X64-LABEL: <or_i128_no_salvage_imm>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, rdi
+; X64:         mov rax, rdi
 ; X64-NEXT:    or rax, 0x3
 ; X64-NEXT:    mov rcx, rsi
 ; X64-NEXT:    or rcx, 0x0
 ; X64-NEXT:    or rdi, rax
 ; X64-NEXT:    or rsi, rcx
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <or_i128_no_salvage_imm>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    mov w2, #0x0 // =0
+; ARM64:         mov w2, #0x0 // =0
 ; ARM64-NEXT:    orr x2, x2, x1
 ; ARM64-NEXT:    orr x3, x0, #0x3
 ; ARM64-NEXT:    orr x2, x2, x1
 ; ARM64-NEXT:    orr x3, x3, x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
 entry:
     %1 = or i128 %0, 3

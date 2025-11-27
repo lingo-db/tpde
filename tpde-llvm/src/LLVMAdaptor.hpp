@@ -70,6 +70,7 @@ enum class LLVMBasicValType : u8 {
   f32,
   f64,
   f128,
+  f80, ///< x86_fp80
 
   v8i8,
   v16i8,
@@ -259,6 +260,10 @@ struct LLVMAdaptor {
   }
 
   [[nodiscard]] static bool func_only_local(const IRFuncRef func) noexcept {
+    if (!func->hasName() && !func->hasLocalLinkage()) [[unlikely]] {
+      TPDE_LOG_WARN("unnamed functions converted to internal linkage");
+      return true;
+    }
     return func->hasLocalLinkage();
   }
 
@@ -622,6 +627,7 @@ public:
     case f32: return 4;
     case f64: return 8;
     case f128: return 16;
+    case f80: return 16;
     case v8i8: return 8;
     case v16i8: return 16;
     case v4i16: return 8;
@@ -656,6 +662,7 @@ public:
     case f32:
     case f64:
     case f128:
+    case f80: // Register moves: SSE; otherwise spilled.
     case v8i8:
     case v16i8:
     case v4i16:

@@ -28,8 +28,8 @@ LLC_LIKE_TOOLS = [
 TRIPLE_ARG_RE = re.compile(r"--target[= ]([^ ]+)")
 OBJDUMP_FUNCTION_RE = re.compile(
     r'^(?:[0-9a-f]+\ )?(?P<func>\<[^\>]+\>)(?P<func_name_separator>:)\n'
-    r"(?P<body>(?:(?!(?:^\s*(?:\.\.\.|nop[^\n]*)\n)*(?:\n|$))^[^\n]+(?:\n|$))*)"
-    r"(?:(?:(?:^\s*(?:\.\.\.|nop[^\n]*)\n)*(?:\n|$))?^\n|$)", # empty line ends function
+    r"(?P<body>(?:(?!(?:^\s*(?:\.\.\.|nop[^\n]*|udf\s+#0x0)\n)*(?:\n|$))^[^\n]+(?:\n|$))*)"
+    r"(?:(?:(?:^\s*(?:\.\.\.|nop[^\n]*|udf\s+#0x0)\n)*(?:\n|$))?^\n|$)", # empty line ends function
     flags=(re.M | re.S),
 )
 
@@ -109,6 +109,10 @@ def main():
                 objdump = "llvm-objdump -d -r --no-show-raw-insn --symbolize-operands --no-addresses --x86-asm-syntax=intel -"
             else:
                 objdump = commands[-2]
+            if objdump.split(" ")[0] != "llvm-objdump":
+                common.warn("Skipping non-objdump RUN line: " + l)
+                continue
+
             llc_cmd = commands[-3] + " | " + objdump
             filecheck_cmd = commands[-1]
             llc_tool = llc_cmd.split(" ")[0]

@@ -14,8 +14,6 @@ define i128 @umul_i128_0(i128 %0, i128 %1) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    mov qword ptr [rbp - 0x40], rdx
 ; X64-NEXT:    test rcx, rcx
 ; X64-NEXT:    setne al
@@ -39,7 +37,6 @@ define i128 @umul_i128_0(i128 %0, i128 %1) {
 ; X64-NEXT:    or dl, cl
 ; X64-NEXT:    movzx edx, dl
 ; X64-NEXT:    mov rdx, rsi
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
@@ -54,8 +51,6 @@ define i1 @umul_i128_1(i128 %0, i128 %1) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    mov qword ptr [rbp - 0x40], rdx
 ; X64-NEXT:    test rcx, rcx
 ; X64-NEXT:    setne al
@@ -79,7 +74,6 @@ define i1 @umul_i128_1(i128 %0, i128 %1) {
 ; X64-NEXT:    or dl, cl
 ; X64-NEXT:    movzx edx, dl
 ; X64-NEXT:    mov eax, edx
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
@@ -94,8 +88,6 @@ define i128 @smul_i128_0(i128 %0, i128 %1) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    mov qword ptr [rbp - 0x40], rdx
 ; X64-NEXT:    mov rbx, rsi
 ; X64-NEXT:    sar rbx, 0x3f
@@ -136,7 +128,6 @@ define i128 @smul_i128_0(i128 %0, i128 %1) {
 ; X64-NEXT:    setne sil
 ; X64-NEXT:    mov rax, r9
 ; X64-NEXT:    mov rdx, r8
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
@@ -151,8 +142,6 @@ define i1 @smul_i128_1(i128 %0, i128 %1) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x38
 ; X64-NEXT:    mov qword ptr [rbp - 0x40], rdx
 ; X64-NEXT:    mov rbx, rsi
 ; X64-NEXT:    sar rbx, 0x3f
@@ -192,7 +181,6 @@ define i1 @smul_i128_1(i128 %0, i128 %1) {
 ; X64-NEXT:    or rcx, rdx
 ; X64-NEXT:    setne sil
 ; X64-NEXT:    mov eax, esi
-; X64-NEXT:    add rsp, 0x38
 ; X64-NEXT:    pop rbx
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret

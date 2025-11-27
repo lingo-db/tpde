@@ -11,21 +11,15 @@ define ptr @alloca_empty() {
 ; X64-LABEL: <alloca_empty>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    lea rax, [rbp]
-; X64-NEXT:    add rsp, 0x30
 ; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <alloca_empty>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    add x0, x29, #0x0
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     %a = alloca {}
     ret ptr %a
@@ -35,7 +29,6 @@ define ptr @dynalloca_empty() {
 ; X64-LABEL: <dynalloca_empty>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    mov rax, rsp
 ; X64-NEXT:    mov rsp, rbp
@@ -43,14 +36,11 @@ define ptr @dynalloca_empty() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dynalloca_empty>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x0
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     br label %bb1
 bb1:
@@ -62,7 +52,6 @@ define ptr @dynalloca_empty_array(i64 %0) {
 ; X64-LABEL: <dynalloca_empty_array>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    xor edi, edi
 ; X64-NEXT:    sub rsp, rdi
@@ -73,15 +62,12 @@ define ptr @dynalloca_empty_array(i64 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dynalloca_empty_array>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    mov w0, #0x0 // =0
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     %a = alloca {}, i64 %0
     ret ptr %a
@@ -91,7 +77,6 @@ define void @dyn_alloca_const() {
 ; X64-LABEL: <dyn_alloca_const>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    sub rsp, 0x10
 ; X64-NEXT:    mov rax, rsp
@@ -101,16 +86,13 @@ define void @dyn_alloca_const() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_const>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x10
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    str x0, [x0]
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -124,7 +106,6 @@ define void @dyn_alloca_const_align_32() {
 ; X64-LABEL: <dyn_alloca_const_align_32>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    sub rsp, 0x10
 ; X64-NEXT:    and rsp, -0x20
@@ -134,16 +115,13 @@ define void @dyn_alloca_const_align_32() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_const_align_32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x10
 ; ARM64-NEXT:    and x0, x0, #0xffffffffffffffe0
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -156,7 +134,6 @@ define void @dyn_alloca_const_align_32_ptr() {
 ; X64-LABEL: <dyn_alloca_const_align_32_ptr>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    sub rsp, 0x10
 ; X64-NEXT:    and rsp, -0x20
@@ -167,17 +144,14 @@ define void @dyn_alloca_const_align_32_ptr() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_const_align_32_ptr>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x10
 ; ARM64-NEXT:    and x0, x0, #0xffffffffffffffe0
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    str x0, [x0]
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -192,7 +166,6 @@ define void @dyn_alloca_dyn_cnt_i64(i64 %a) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    mov rax, rbx
@@ -239,8 +212,7 @@ define void @dyn_alloca_dyn_cnt_i64(i64 %a) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_cnt_i64>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov x19, x0
@@ -280,8 +252,7 @@ define void @dyn_alloca_dyn_cnt_i64(i64 %a) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     br label %bb1
 bb1:
@@ -303,7 +274,6 @@ define void @dyn_alloca_dyn_i8_cnt_i32(i32 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    mov ebx, ebx
@@ -316,8 +286,7 @@ define void @dyn_alloca_dyn_i8_cnt_i32(i32 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_i8_cnt_i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -327,8 +296,7 @@ define void @dyn_alloca_dyn_i8_cnt_i32(i32 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -342,7 +310,6 @@ define void @dyn_alloca_dyn_i32_cnt_i32(i32 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    mov ebx, ebx
@@ -356,8 +323,7 @@ define void @dyn_alloca_dyn_i32_cnt_i32(i32 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_i32_cnt_i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -367,8 +333,7 @@ define void @dyn_alloca_dyn_i32_cnt_i32(i32 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -382,7 +347,6 @@ define void @dyn_alloca_dyn_i32_cnt_i37(i37 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    movabs rax, 0x1fffffffff
@@ -397,8 +361,7 @@ define void @dyn_alloca_dyn_i32_cnt_i37(i37 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_i32_cnt_i37>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov x19, x0
@@ -408,8 +371,7 @@ define void @dyn_alloca_dyn_i32_cnt_i37(i37 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -426,7 +388,6 @@ define void @dyn_alloca_dyn_si3_cnt_i64(i64 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    imul rbx, rbx, 0xc
@@ -439,8 +400,7 @@ define void @dyn_alloca_dyn_si3_cnt_i64(i64 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i64>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov x19, x0
@@ -451,8 +411,7 @@ define void @dyn_alloca_dyn_si3_cnt_i64(i64 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -466,7 +425,6 @@ define void @dyn_alloca_dyn_si3_cnt_i32(i32 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    mov ebx, ebx
@@ -480,8 +438,7 @@ define void @dyn_alloca_dyn_si3_cnt_i32(i32 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -493,8 +450,7 @@ define void @dyn_alloca_dyn_si3_cnt_i32(i32 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -510,7 +466,6 @@ define void @dyn_alloca_dyn_si3_cnt_i16(i16 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    movzx ebx, bx
@@ -524,8 +479,7 @@ define void @dyn_alloca_dyn_si3_cnt_i16(i16 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i16>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -537,8 +491,7 @@ define void @dyn_alloca_dyn_si3_cnt_i16(i16 %0) {
 ; ARM64-NEXT:    mov sp, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -554,7 +507,6 @@ define i64 @dyn_alloca_dyn_i8_cnt_i64_no_salvage(i64 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    mov rax, rbx
@@ -568,8 +520,7 @@ define i64 @dyn_alloca_dyn_i8_cnt_i64_no_salvage(i64 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_i8_cnt_i64_no_salvage>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov x19, x0
@@ -579,8 +530,7 @@ define i64 @dyn_alloca_dyn_i8_cnt_i64_no_salvage(i64 %0) {
 ; ARM64-NEXT:    mov x0, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -594,7 +544,6 @@ define i32 @dyn_alloca_dyn_i32_cnt_i32_no_salvage(i32 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    mov eax, ebx
@@ -609,8 +558,7 @@ define i32 @dyn_alloca_dyn_i32_cnt_i32_no_salvage(i32 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_i32_cnt_i32_no_salvage>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -621,8 +569,7 @@ define i32 @dyn_alloca_dyn_i32_cnt_i32_no_salvage(i32 %0) {
 ; ARM64-NEXT:    mov w0, w19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -636,7 +583,6 @@ define i64 @dyn_alloca_dyn_si3_cnt_i64_no_salvage(i64 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    imul rax, rbx, 0xc
@@ -650,8 +596,7 @@ define i64 @dyn_alloca_dyn_si3_cnt_i64_no_salvage(i64 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i64_no_salvage>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov x19, x0
@@ -663,8 +608,7 @@ define i64 @dyn_alloca_dyn_si3_cnt_i64_no_salvage(i64 %0) {
 ; ARM64-NEXT:    mov x0, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -678,7 +622,6 @@ define i32 @dyn_alloca_dyn_si3_cnt_i32_no_salvage(i32 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    mov eax, ebx
@@ -693,8 +636,7 @@ define i32 @dyn_alloca_dyn_si3_cnt_i32_no_salvage(i32 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i32_no_salvage>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -707,8 +649,7 @@ define i32 @dyn_alloca_dyn_si3_cnt_i32_no_salvage(i32 %0) {
 ; ARM64-NEXT:    mov w0, w19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -722,7 +663,6 @@ define i16 @dyn_alloca_dyn_si3_cnt_i16_no_salvage(i16 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov ebx, edi
 ; X64-NEXT:    movzx eax, bx
@@ -737,8 +677,7 @@ define i16 @dyn_alloca_dyn_si3_cnt_i16_no_salvage(i16 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dyn_alloca_dyn_si3_cnt_i16_no_salvage>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    mov w19, w0
@@ -751,8 +690,7 @@ define i16 @dyn_alloca_dyn_si3_cnt_i16_no_salvage(i16 %0) {
 ; ARM64-NEXT:    mov w0, w19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
     br label %bb1
@@ -765,7 +703,6 @@ define ptr @alloca_align_4k() {
 ; X64-LABEL: <alloca_align_4k>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    sub rsp, 0x10
 ; X64-NEXT:    and rsp, -0x1000
@@ -775,16 +712,13 @@ define ptr @alloca_align_4k() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <alloca_align_4k>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x10
 ; ARM64-NEXT:    and x0, x0, #0xfffffffffffff000
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     %a = alloca i32, align 4096
     ret ptr %a
@@ -795,7 +729,6 @@ define ptr @dynalloca_align_16(i64 %0) {
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
 ; X64-NEXT:    push rbx
-; X64-NEXT:    nop dword ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x28
 ; X64-NEXT:    mov rbx, rdi
 ; X64-NEXT:    sub rsp, rbx
@@ -808,8 +741,7 @@ define ptr @dynalloca_align_16(i64 %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dynalloca_align_16>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
 ; ARM64-NEXT:    str x19, [x29, #0x10]
 ; ARM64-NEXT:    sub x19, sp, x0
@@ -818,8 +750,7 @@ define ptr @dynalloca_align_16(i64 %0) {
 ; ARM64-NEXT:    mov x0, x19
 ; ARM64-NEXT:    mov sp, x29
 ; ARM64-NEXT:    ldr x19, [x29, #0x10]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
   %2 = alloca i8, i64 %0, align 16
   br label %3
@@ -832,7 +763,6 @@ define ptr @dynalloca_align_4k() {
 ; X64-LABEL: <dynalloca_align_4k>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:    sub rsp, 0x10
 ; X64-NEXT:    and rsp, -0x1000
@@ -842,16 +772,13 @@ define ptr @dynalloca_align_4k() {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <dynalloca_align_4k>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
 ; ARM64-NEXT:    sub x0, sp, #0x10
 ; ARM64-NEXT:    and x0, x0, #0xfffffffffffff000
 ; ARM64-NEXT:    mov sp, x0
 ; ARM64-NEXT:    mov sp, x29
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
     br label %bb1
 bb1:
@@ -870,150 +797,124 @@ define void @f2(ptr %0, ptr %1, ptr %2, ptr %3, ptr %4, ptr %5, ptr %6, ptr %7, 
 ; X64-NEXT:    push r13
 ; X64-NEXT:    push r14
 ; X64-NEXT:    push r15
-; X64-NEXT:    sub rsp, 0x9ce8
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x10]
-; X64-NEXT:    mov rbx, qword ptr [rbp + 0x18]
-; X64-NEXT:    mov r10, qword ptr [rbp + 0x20]
-; X64-NEXT:    mov r11, qword ptr [rbp + 0x28]
-; X64-NEXT:    mov r12, qword ptr [rbp + 0x30]
-; X64-NEXT:    mov r13, qword ptr [rbp + 0x38]
-; X64-NEXT:    mov r14, qword ptr [rbp + 0x40]
-; X64-NEXT:    mov r15, qword ptr [rbp + 0x48]
+; X64-NEXT:    sub rsp, 0x9e08
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x20]
+; X64-NEXT:    mov rbx, qword ptr [rbp + 0x28]
+; X64-NEXT:    mov r10, qword ptr [rbp + 0x30]
+; X64-NEXT:    mov r11, qword ptr [rbp + 0x38]
+; X64-NEXT:    mov r12, qword ptr [rbp + 0x40]
+; X64-NEXT:    mov r13, qword ptr [rbp + 0x48]
+; X64-NEXT:    mov r14, qword ptr [rbp + 0x50]
+; X64-NEXT:    mov r15, qword ptr [rbp + 0x58]
 ; X64-NEXT:    mov qword ptr [rbp - 0x30], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x50]
-; X64-NEXT:    mov qword ptr [rbp - 0x38], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x58]
-; X64-NEXT:    mov qword ptr [rbp - 0x40], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x60]
-; X64-NEXT:    mov qword ptr [rbp - 0x48], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9c78], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x68]
-; X64-NEXT:    mov qword ptr [rbp - 0x50], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9c80], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x70]
-; X64-NEXT:    mov qword ptr [rbp - 0x58], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9c88], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x78]
-; X64-NEXT:    mov qword ptr [rbp - 0x60], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9c90], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x80]
-; X64-NEXT:    mov qword ptr [rbp - 0x68], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9c98], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x88]
-; X64-NEXT:    mov qword ptr [rbp - 0x70], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9ca0], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x90]
-; X64-NEXT:    mov qword ptr [rbp - 0x78], rax
+; X64-NEXT:    mov qword ptr [rbp - 0x9ca8], rax
 ; X64-NEXT:    mov rax, qword ptr [rbp + 0x98]
-; X64-NEXT:    mov qword ptr [rbp - 0x80], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x38]
-; X64-NEXT:    mov qword ptr [rbp - 0x38], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x40]
-; X64-NEXT:    mov qword ptr [rbp - 0x40], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x48]
-; X64-NEXT:    mov qword ptr [rbp - 0x48], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x50]
-; X64-NEXT:    mov qword ptr [rbp - 0x50], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x58]
-; X64-NEXT:    mov qword ptr [rbp - 0x58], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x60]
-; X64-NEXT:    mov qword ptr [rbp - 0x60], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x68]
-; X64-NEXT:    mov qword ptr [rbp - 0x68], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x70]
-; X64-NEXT:    mov qword ptr [rbp - 0x70], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x78]
-; X64-NEXT:    mov qword ptr [rbp - 0x78], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x80]
-; X64-NEXT:    mov qword ptr [rbp - 0x80], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    mov qword ptr [rbp - 0x9cb0], rax
+; X64-NEXT:    xor eax, eax
+; X64-NEXT:    mov qword ptr [rbp - 0x9cb8], rax
+; X64-NEXT:    xor eax, eax
+; X64-NEXT:    mov qword ptr [rbp - 0x9cc0], rax
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rbp - 0x9cc8], rax
-; X64-NEXT:    mov eax, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9cd0], rax
-; X64-NEXT:    mov eax, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9cd8], rax
-; X64-NEXT:    mov eax, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9ce0], rdi
-; X64-NEXT:    mov edi, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9ce8], rsi
-; X64-NEXT:    mov esi, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9cf0], rdx
-; X64-NEXT:    mov edx, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9cf8], rcx
-; X64-NEXT:    mov ecx, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9d00], r8
-; X64-NEXT:    mov r8d, 0x0
-; X64-NEXT:    mov qword ptr [rbp - 0x9d08], r9
-; X64-NEXT:    mov r9d, 0x0
-; X64-NEXT:    sub rsp, 0x130
-; X64-NEXT:    mov qword ptr [rbp - 0x9d10], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
+; X64-NEXT:    mov qword ptr [rbp - 0x9cd0], rdi
+; X64-NEXT:    xor edi, edi
+; X64-NEXT:    mov qword ptr [rbp - 0x9cd8], rsi
+; X64-NEXT:    xor esi, esi
+; X64-NEXT:    mov qword ptr [rbp - 0x9ce0], rdx
+; X64-NEXT:    xor edx, edx
+; X64-NEXT:    mov qword ptr [rbp - 0x9ce8], rcx
+; X64-NEXT:    xor ecx, ecx
+; X64-NEXT:    mov qword ptr [rbp - 0x9cf0], r8
+; X64-NEXT:    xor r8d, r8d
+; X64-NEXT:    mov qword ptr [rbp - 0x9cf8], r9
+; X64-NEXT:    xor r9d, r9d
+; X64-NEXT:    mov qword ptr [rbp - 0x9d00], rax
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x8], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x10], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x18], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x20], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x28], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x30], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x38], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:    mov qword ptr [rsp + 0x40], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ce8]
-; X64-NEXT:    mov qword ptr [rsp + 0x48], rax
-; X64-NEXT:    mov qword ptr [rsp + 0x50], r10
-; X64-NEXT:    mov qword ptr [rsp + 0x58], r11
-; X64-NEXT:    mov qword ptr [rsp + 0x60], r12
-; X64-NEXT:    mov qword ptr [rsp + 0x68], r13
-; X64-NEXT:    mov qword ptr [rsp + 0x70], r14
-; X64-NEXT:    mov qword ptr [rsp + 0x78], r15
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x38]
-; X64-NEXT:    mov qword ptr [rsp + 0x80], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x40]
-; X64-NEXT:    mov qword ptr [rsp + 0x88], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x48]
-; X64-NEXT:    mov qword ptr [rsp + 0x90], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x50]
-; X64-NEXT:    mov qword ptr [rsp + 0x98], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x58]
-; X64-NEXT:    mov qword ptr [rsp + 0xa0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x60]
-; X64-NEXT:    mov qword ptr [rsp + 0xa8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x68]
-; X64-NEXT:    mov qword ptr [rsp + 0xb0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x70]
-; X64-NEXT:    mov qword ptr [rsp + 0xb8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x78]
-; X64-NEXT:    mov qword ptr [rsp + 0xc0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x80]
-; X64-NEXT:    mov qword ptr [rsp + 0xc8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ce0]
-; X64-NEXT:    mov qword ptr [rsp + 0xd0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cc8]
-; X64-NEXT:    mov qword ptr [rsp + 0xd8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cd0]
-; X64-NEXT:    mov qword ptr [rsp + 0xe0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cf0]
-; X64-NEXT:    mov qword ptr [rsp + 0xe8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cf8]
-; X64-NEXT:    mov qword ptr [rsp + 0xf0], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9d00]
-; X64-NEXT:    mov qword ptr [rsp + 0xf8], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9d08]
-; X64-NEXT:    mov qword ptr [rsp + 0x100], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x30]
-; X64-NEXT:    mov qword ptr [rsp + 0x108], rax
-; X64-NEXT:    mov qword ptr [rsp + 0x110], rbx
 ; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cd8]
+; X64-NEXT:    mov qword ptr [rsp + 0x48], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x30]
+; X64-NEXT:    mov qword ptr [rsp + 0x50], rax
+; X64-NEXT:    mov qword ptr [rsp + 0x58], rbx
+; X64-NEXT:    mov qword ptr [rsp + 0x60], r10
+; X64-NEXT:    mov qword ptr [rsp + 0x68], r11
+; X64-NEXT:    mov qword ptr [rsp + 0x70], r12
+; X64-NEXT:    mov qword ptr [rsp + 0x78], r13
+; X64-NEXT:    mov qword ptr [rsp + 0x80], r14
+; X64-NEXT:    mov qword ptr [rsp + 0x88], r15
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9c78]
+; X64-NEXT:    mov qword ptr [rsp + 0x90], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9c80]
+; X64-NEXT:    mov qword ptr [rsp + 0x98], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9c88]
+; X64-NEXT:    mov qword ptr [rsp + 0xa0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9c90]
+; X64-NEXT:    mov qword ptr [rsp + 0xa8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9c98]
+; X64-NEXT:    mov qword ptr [rsp + 0xb0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ca0]
+; X64-NEXT:    mov qword ptr [rsp + 0xb8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ca8]
+; X64-NEXT:    mov qword ptr [rsp + 0xc0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cb0]
+; X64-NEXT:    mov qword ptr [rsp + 0xc8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cd0]
+; X64-NEXT:    mov qword ptr [rsp + 0xd0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cb8]
+; X64-NEXT:    mov qword ptr [rsp + 0xd8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cc0]
+; X64-NEXT:    mov qword ptr [rsp + 0xe0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ce0]
+; X64-NEXT:    mov qword ptr [rsp + 0xe8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9ce8]
+; X64-NEXT:    mov qword ptr [rsp + 0xf0], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cf0]
+; X64-NEXT:    mov qword ptr [rsp + 0xf8], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cf8]
+; X64-NEXT:    mov qword ptr [rsp + 0x100], rax
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x10]
+; X64-NEXT:    mov qword ptr [rsp + 0x108], rax
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x18]
+; X64-NEXT:    mov qword ptr [rsp + 0x110], rax
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9cc8]
 ; X64-NEXT:    mov qword ptr [rsp + 0x118], rax
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x9d10]
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x9d00]
 ; X64-NEXT:    mov qword ptr [rsp + 0x120], rax
-; X64-NEXT:    mov eax, 0x0
+; X64-NEXT:    xor eax, eax
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    call <L0>
 ; X64-NEXT:     R_X86_64_PLT32 f1-0x4
-; X64-NEXT:    add rsp, 0x130
-; X64-NEXT:    add rsp, 0x9ce8
+; X64-NEXT:    add rsp, 0x9e08
 ; X64-NEXT:    pop r15
 ; X64-NEXT:    pop r14
 ; X64-NEXT:    pop r13
@@ -1139,15 +1040,15 @@ define void @f2(ptr %0, ptr %1, ptr %2, ptr %3, ptr %4, ptr %5, ptr %6, ptr %7, 
 ; ARM64-NEXT:    str x8, [sp, #0x100]
 ; ARM64-NEXT:    str x28, [sp, #0x108]
 ; ARM64-NEXT:    str x30, [sp, #0x110]
-; ARM64-NEXT:    bl 0x9c0 <f2+0x1d0>
+; ARM64-NEXT:    bl 0x640 <f2+0x1d0>
 ; ARM64-NEXT:     R_AARCH64_CALL26 f1
 ; ARM64-NEXT:    add sp, sp, #0x120
-; ARM64-NEXT:    ldp x29, x30, [sp]
 ; ARM64-NEXT:    ldp x19, x20, [sp, #0x10]
 ; ARM64-NEXT:    ldp x21, x22, [sp, #0x20]
 ; ARM64-NEXT:    ldp x23, x24, [sp, #0x30]
 ; ARM64-NEXT:    ldp x25, x26, [sp, #0x40]
 ; ARM64-NEXT:    ldp x27, x28, [sp, #0x50]
+; ARM64-NEXT:    ldp x29, x30, [sp]
 ; ARM64-NEXT:    add sp, sp, #0xa, lsl #12 // =0xa000
 ; ARM64-NEXT:    ret
   %25 = alloca [10000 x i32], align 4
@@ -1185,122 +1086,76 @@ define void @alloca_manyregs(i32 %0, ptr %1, ptr %2, ptr %3, i64 %4, i32 %5, ptr
 ; X64-NEXT:    push r13
 ; X64-NEXT:    push r14
 ; X64-NEXT:    push r15
-; X64-NEXT:    sub rsp, 0x40808
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x10]
-; X64-NEXT:    mov rbx, qword ptr [rbp + 0x18]
-; X64-NEXT:    mov r10, qword ptr [rbp + 0x20]
-; X64-NEXT:    mov r11, qword ptr [rbp + 0x28]
-; X64-NEXT:    mov r12, qword ptr [rbp + 0x30]
-; X64-NEXT:    mov r13, qword ptr [rbp + 0x38]
-; X64-NEXT:    mov r14, qword ptr [rbp + 0x40]
-; X64-NEXT:    mov r15d, dword ptr [rbp + 0x48]
-; X64-NEXT:    mov qword ptr [rbp - 0x30], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x50]
-; X64-NEXT:    mov qword ptr [rbp - 0x38], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x58]
-; X64-NEXT:    mov qword ptr [rbp - 0x40], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x60]
-; X64-NEXT:    mov qword ptr [rbp - 0x48], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x68]
-; X64-NEXT:    mov qword ptr [rbp - 0x50], rax
-; X64-NEXT:    mov eax, dword ptr [rbp + 0x70]
-; X64-NEXT:    mov dword ptr [rbp - 0x54], eax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x78]
-; X64-NEXT:    mov qword ptr [rbp - 0x60], rax
-; X64-NEXT:    mov eax, dword ptr [rbp + 0x80]
-; X64-NEXT:    mov dword ptr [rbp - 0x58], eax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x88]
-; X64-NEXT:    mov qword ptr [rbp - 0x68], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x90]
-; X64-NEXT:    mov qword ptr [rbp - 0x70], rax
-; X64-NEXT:    mov rax, qword ptr [rbp + 0x98]
-; X64-NEXT:    mov qword ptr [rbp - 0x78], rax
-; X64-NEXT:    mov eax, dword ptr [rbp + 0xa0]
-; X64-NEXT:    mov dword ptr [rbp - 0x7c], eax
-; X64-NEXT:    mov eax, dword ptr [rbp + 0xa8]
-; X64-NEXT:    mov dword ptr [rbp - 0x80], eax
-; X64-NEXT:    mov eax, dword ptr [rbp + 0xb0]
-; X64-NEXT:    mov dword ptr [rbp - 0x407c4], eax
-; X64-NEXT:    mov qword ptr [rbp - 0x407d0], rcx
-; X64-NEXT:    mov qword ptr [rbp - 0x407d8], rdx
-; X64-NEXT:    mov qword ptr [rbp - 0x407e0], rbx
-; X64-NEXT:    mov qword ptr [rbp - 0x407e8], rsi
-; X64-NEXT:    mov dword ptr [rbp - 0x407c8], edi
-; X64-NEXT:    mov qword ptr [rbp - 0x407f0], r8
-; X64-NEXT:    mov dword ptr [rbp - 0x407f4], r9d
-; X64-NEXT:    mov qword ptr [rbp - 0x40800], r10
-; X64-NEXT:    mov qword ptr [rbp - 0x40808], r11
-; X64-NEXT:    mov qword ptr [rbp - 0x40810], r12
-; X64-NEXT:    mov qword ptr [rbp - 0x40818], r13
-; X64-NEXT:    mov qword ptr [rbp - 0x40820], r14
-; X64-NEXT:    mov dword ptr [rbp - 0x407f8], r15d
-; X64-NEXT:    mov eax, 0x0
-; X64-NEXT:    mov dword ptr [rbp - 0x40824], eax
-; X64-NEXT:    mov eax, dword ptr [rbp - 0x407c4]
+; X64-NEXT:    sub rsp, 0x40778
+; X64-NEXT:    mov qword ptr [rbp - 0x30], rcx
+; X64-NEXT:    mov qword ptr [rbp - 0x40778], rdx
+; X64-NEXT:    mov qword ptr [rbp - 0x40780], rsi
+; X64-NEXT:    mov dword ptr [rbp - 0x40784], edi
+; X64-NEXT:    mov qword ptr [rbp - 0x40790], r8
+; X64-NEXT:    mov dword ptr [rbp - 0x40788], r9d
+; X64-NEXT:    xor eax, eax
+; X64-NEXT:    mov dword ptr [rbp - 0x40794], eax
 ; X64-NEXT:  <L0>:
-; X64-NEXT:    mov rax, qword ptr [rbp - 0x407d0]
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x407f0]
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x30]
+; X64-NEXT:    mov rcx, qword ptr [rbp - 0x40790]
 ; X64-NEXT:    lea rdx, [rax + rcx]
-; X64-NEXT:    mov edx, dword ptr [rbp - 0x407f4]
+; X64-NEXT:    mov edx, dword ptr [rbp - 0x40788]
 ; X64-NEXT:    mov ebx, edx
 ; X64-NEXT:    or ebx, 0x0
-; X64-NEXT:    mov rbx, qword ptr [rbp - 0x30]
+; X64-NEXT:    mov rbx, qword ptr [rbp + 0x10]
 ; X64-NEXT:    mov esi, dword ptr [rbx]
-; X64-NEXT:    mov rsi, qword ptr [rbp - 0x407e0]
+; X64-NEXT:    mov rsi, qword ptr [rbp + 0x18]
 ; X64-NEXT:    mov edi, dword ptr [rsi]
-; X64-NEXT:    mov rdi, qword ptr [rbp - 0x40800]
+; X64-NEXT:    mov rdi, qword ptr [rbp + 0x20]
 ; X64-NEXT:    mov dword ptr [rdi], 0x0
-; X64-NEXT:    mov r8, qword ptr [rbp - 0x40808]
+; X64-NEXT:    mov r8, qword ptr [rbp + 0x28]
 ; X64-NEXT:    mov r9d, dword ptr [r8]
-; X64-NEXT:    mov r9, qword ptr [rbp - 0x40810]
+; X64-NEXT:    mov r9, qword ptr [rbp + 0x30]
 ; X64-NEXT:    mov r10d, dword ptr [r9]
-; X64-NEXT:    mov r10, qword ptr [rbp - 0x40818]
+; X64-NEXT:    mov r10, qword ptr [rbp + 0x38]
 ; X64-NEXT:    mov r11d, dword ptr [r10]
-; X64-NEXT:    mov r11, qword ptr [rbp - 0x407e8]
+; X64-NEXT:    mov r11, qword ptr [rbp - 0x40780]
 ; X64-NEXT:    mov r12, r11
-; X64-NEXT:    mov r12, qword ptr [rbp - 0x40820]
-; X64-NEXT:    test r12, r12
+; X64-NEXT:    cmp qword ptr [rbp + 0x40], 0x0
+; X64-NEXT:    sete r12b
+; X64-NEXT:    mov r12d, dword ptr [rbp + 0x48]
+; X64-NEXT:    mov r13d, r12d
+; X64-NEXT:    and r13d, 0x0
+; X64-NEXT:    cmp qword ptr [rbp + 0x50], 0x0
 ; X64-NEXT:    sete r13b
-; X64-NEXT:    mov r13d, dword ptr [rbp - 0x407f8]
-; X64-NEXT:    mov r14d, r13d
-; X64-NEXT:    and r14d, 0x0
-; X64-NEXT:    mov r14, qword ptr [rbp - 0x38]
-; X64-NEXT:    test r14, r14
-; X64-NEXT:    sete r15b
-; X64-NEXT:    mov r15, qword ptr [rbp - 0x40]
+; X64-NEXT:    mov r13, qword ptr [rbp + 0x58]
+; X64-NEXT:    mov r14d, dword ptr [r13]
+; X64-NEXT:    xor r14d, r14d
+; X64-NEXT:    lea r14d, [1*r14]
+; X64-NEXT:    mov r15, qword ptr [rbp + 0x60]
 ; X64-NEXT:    mov eax, dword ptr [r15]
-; X64-NEXT:    mov eax, 0x0
-; X64-NEXT:    lea eax, [1*rax]
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x48]
-; X64-NEXT:    mov edx, dword ptr [rcx]
-; X64-NEXT:    mov rdx, qword ptr [rbp - 0x50]
-; X64-NEXT:    mov dword ptr [rdx], 0x0
-; X64-NEXT:    mov ecx, dword ptr [rbp - 0x54]
-; X64-NEXT:    mov dword ptr [0x0], ecx
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x60]
-; X64-NEXT:    test rcx, rcx
-; X64-NEXT:    sete cl
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x407d8]
-; X64-NEXT:    lea rdx, [rcx + 0x4]
-; X64-NEXT:    mov edx, 0x0
-; X64-NEXT:    mov ebx, dword ptr [rbp - 0x58]
-; X64-NEXT:    mov ecx, ebx
-; X64-NEXT:    shr edx, cl
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x68]
-; X64-NEXT:    mov rdx, rcx
-; X64-NEXT:    mov rdx, qword ptr [rbp - 0x70]
-; X64-NEXT:    mov rcx, qword ptr [rbp - 0x78]
-; X64-NEXT:    lea rbx, [rdx + 4*rcx]
-; X64-NEXT:    mov ebx, dword ptr [rbp - 0x7c]
-; X64-NEXT:    mov ecx, ebx
-; X64-NEXT:    and ecx, dword ptr [rbp - 0x80]
-; X64-NEXT:    mov ecx, dword ptr [rbp - 0x407c4]
-; X64-NEXT:    mov edx, ecx
-; X64-NEXT:    shr edx, 0x0
-; X64-NEXT:    mov edx, dword ptr [rbp - 0x407c8]
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x68]
+; X64-NEXT:    mov dword ptr [rax], 0x0
+; X64-NEXT:    mov eax, dword ptr [rbp + 0x70]
+; X64-NEXT:    mov dword ptr [0x0], eax
+; X64-NEXT:    cmp qword ptr [rbp + 0x78], 0x0
+; X64-NEXT:    sete al
+; X64-NEXT:    mov rax, qword ptr [rbp - 0x40778]
+; X64-NEXT:    lea rcx, [rax + 0x4]
+; X64-NEXT:    xor eax, eax
+; X64-NEXT:    mov edx, dword ptr [rbp + 0x80]
 ; X64-NEXT:    mov ecx, edx
-; X64-NEXT:    or ecx, 0x0
-; X64-NEXT:    mov dword ptr [rbp - 0x40824], eax
+; X64-NEXT:    shr eax, cl
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x88]
+; X64-NEXT:    mov rcx, rax
+; X64-NEXT:    mov rcx, qword ptr [rbp + 0x90]
+; X64-NEXT:    mov rax, qword ptr [rbp + 0x98]
+; X64-NEXT:    lea rdx, [rcx + 4*rax]
+; X64-NEXT:    mov edx, dword ptr [rbp + 0xa0]
+; X64-NEXT:    mov eax, edx
+; X64-NEXT:    and eax, dword ptr [rbp + 0xa8]
+; X64-NEXT:    mov eax, dword ptr [rbp + 0xb0]
+; X64-NEXT:    mov ecx, eax
+; X64-NEXT:    shr ecx, 0x0
+; X64-NEXT:    mov ecx, dword ptr [rbp - 0x40784]
+; X64-NEXT:    mov eax, ecx
+; X64-NEXT:    or eax, 0x0
+; X64-NEXT:    mov dword ptr [rbp - 0x40794], r14d
 ; X64-NEXT:    jmp <L0>
 ;
 ; ARM64-LABEL: <alloca_manyregs>:
@@ -1481,7 +1336,7 @@ define void @alloca_manyregs(i32 %0, ptr %1, ptr %2, ptr %3, i64 %4, i32 %5, ptr
 ; ARM64-NEXT:    orr w30, w30, w0
 ; ARM64-NEXT:    add x16, x29, #0x40, lsl #12 // =0x40000
 ; ARM64-NEXT:    str w14, [x16, #0x898]
-; ARM64-NEXT:    b 0xb54 <alloca_manyregs+0x154>
+; ARM64-NEXT:    b 0x7c4 <alloca_manyregs+0x154>
   %23 = alloca [66000 x i32], align 4
   br label %24
 

@@ -6,6 +6,8 @@
 #include "tpde/AssemblerElf.hpp"
 #include "tpde/AssignmentPartRef.hpp"
 #include "tpde/CompilerBase.hpp"
+#include "tpde/DWARF.hpp"
+#include "tpde/ELF.hpp"
 #include "tpde/arm64/FunctionWriterA64.hpp"
 #include "tpde/base.hpp"
 #include "tpde/util/SmallVector.hpp"
@@ -13,7 +15,6 @@
 
 #include <bit>
 #include <disarm64.h>
-#include <elf.h>
 
 // Helper macros for assembling in the compiler
 #if defined(ASM) || defined(ASMNC) || defined(ASMC)
@@ -161,6 +162,7 @@ constexpr static u64 create_bitmask(const std::array<AsmReg, N> regs) {
   return set;
 }
 
+/// AArch64 AAPCS calling convention.
 class CCAssignerAAPCS : public CCAssigner {
   static constexpr CCInfo Info{
       // we reserve SP,FP,R16 and R17 for our special use cases
@@ -288,7 +290,7 @@ public:
 };
 
 struct PlatformConfig : CompilerConfigDefault {
-  using Assembler = AssemblerElfA64;
+  using Assembler = tpde::elf::AssemblerElfA64;
   using AsmReg = tpde::a64::AsmReg;
   using DefaultCCAssigner = CCAssignerAAPCS;
   using FunctionWriter = FunctionWriterA64;
@@ -300,19 +302,7 @@ struct PlatformConfig : CompilerConfigDefault {
   static constexpr u32 NUM_BANKS = 2;
 };
 
-namespace concepts {
-template <typename T, typename Config>
-concept Compiler = tpde::Compiler<T, Config> && requires(T a) {
-  {
-    a.arg_is_int128(std::declval<typename T::IRValueRef>())
-  } -> std::convertible_to<bool>;
-
-  {
-    a.arg_allow_split_reg_stack_passing(std::declval<typename T::IRValueRef>())
-  } -> std::convertible_to<bool>;
-};
-} // namespace concepts
-
+/// Compiler mixin for targeting AArch64.
 template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy =
@@ -330,7 +320,6 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
   using ValuePart = typename Base::ValuePart;
   using GenericValuePart = typename Base::GenericValuePart;
 
-  using Assembler = typename PlatformConfig::Assembler;
   using RegisterFile = typename Base::RegisterFile;
 
   using CallArg = typename Base::CallArg;
@@ -356,7 +345,7 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
   // prevent issues with exception handling
   u64 fixed_assignment_nonallocatable_mask =
       create_bitmask({AsmReg::R0, AsmReg::R1});
-  u32 func_start_off = 0u, func_prologue_alloc = 0u, func_epilogue_alloc = 0u;
+  u32 func_start_off = 0u, func_prologue_alloc = 0u;
   /// Offset to the `add sp, sp, XXX` instruction that the argument handling
   /// uses to access stack arguments if needed
   u32 func_arg_stack_add_off = ~0u;
@@ -370,6 +359,7 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
   u32 reg_save_frame_off = 0;
   util::SmallVector<u32, 8> func_ret_offs = {};
 
+  /// Helper class for building call sequences.
   class CallBuilder : public Base::template CallBuilderBase<CallBuilder> {
     u32 stack_adjust_off = 0;
     u32 stack_size = 0;
@@ -378,6 +368,7 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
     void set_stack_used() noexcept;
 
   public:
+    /// Constructor.
     CallBuilder(Derived &compiler, CCAssigner &assigner) noexcept
         : Base::template CallBuilderBase<CallBuilder>(compiler, assigner) {}
 
@@ -392,12 +383,18 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
                        const CPU_FEATURES cpu_features = CPU_BASELINE)
       : Base{adaptor}, cpu_feats(cpu_features) {
     static_assert(std::is_base_of_v<CompilerA64, Derived>);
-    static_assert(concepts::Compiler<Derived, PlatformConfig>);
   }
 
-  void start_func(u32 func_idx) noexcept;
+  void start_func(u32) noexcept {}
 
-  void gen_func_prolog_and_args(CCAssigner *cc_assigner) noexcept;
+  /// Begin prologue, prepare for assigning arguments.
+  void prologue_begin(CCAssigner *cc_assigner) noexcept;
+  /// Assign argument part. Returns the stack offset if the value should be
+  /// initialized as stack variable.
+  std::optional<i32> prologue_assign_arg_part(ValuePart &&vp,
+                                              CCAssignment cca) noexcept;
+  /// Finish prologue.
+  void prologue_end(CCAssigner *cc_assigner) noexcept;
 
   // note: this has to call assembler->end_func
   void finish_func(u32 func_idx) noexcept;
@@ -437,10 +434,12 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
                       u32 align,
                       ValuePart &res) noexcept;
 
+  /// Materialize constant into a register.
   void materialize_constant(const u64 *data,
                             RegBank bank,
                             u32 size,
                             AsmReg dst) noexcept;
+  /// Materialize constant into a register.
   void materialize_constant(u64 const_u64,
                             RegBank bank,
                             u32 size,
@@ -451,30 +450,31 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
 
   AsmReg select_fixed_assignment_reg(AssignmentPartRef, IRValueRef) noexcept;
 
+  /// Jump conditions.
   struct Jump {
+    // TDOO: naming consistency
     enum Kind : uint8_t {
-      Jeq,
-      Jne,
-      Jcs,
-      Jhs = Jcs,
-      Jcc,
-      Jlo = Jcc,
-      Jmi,
-      Jpl,
-      Jvs,
-      Jvc,
-      Jhi,
-      Jls,
-      Jge,
-      Jlt,
-      Jgt,
-      Jle,
-      // TDOO: consistency
-      jmp,
-      Cbz,
-      Cbnz,
-      Tbz,
-      Tbnz
+      Jeq,       ///< Equal (Z == 1)
+      Jne,       ///< Not equal (Z == 0)
+      Jcs,       ///< Carry set (C == 1)
+      Jhs = Jcs, ///< Unsigned higher or same (C == 1)
+      Jcc,       ///< Carry clear (C == 0)
+      Jlo = Jcc, ///< Unsigned lower (C == 0)
+      Jmi,       ///< Minus, negative (N == 1)
+      Jpl,       ///< Plus, positive or zero  (N == 0)
+      Jvs,       ///< Overflow  (V == 1)
+      Jvc,       ///< No Overflow (V == 0)
+      Jhi,       ///< Unsigned higher (C == 1 && Z == 0)
+      Jls,       ///< Unsigned lower or same (!(C == 1 && Z == 0))
+      Jge,       ///< Signed greater than or equal (N == V)
+      Jlt,       ///< Signed less than (N != V)
+      Jgt,       ///< Signed greater than (Z == 0 && N == V)
+      Jle,       ///< Signed lessthan or equal  (!(Z == 0 && N == V))
+      jmp,       ///< Unconditional jump
+      Cbz,       ///< Compare and branch if zero (Wn or Xn register)
+      Cbnz,      ///< Compare and branch if not zero (Wn or Xn register)
+      Tbz,       ///< Test single bit and branch if zero (Xn register)
+      Tbnz,      ///< Test single bit and branch if not zero (Xn register)
     };
 
     Kind kind;
@@ -482,17 +482,21 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
     bool cmp_is_32;
     u8 test_bit;
 
+    /// Unconditional branch.
     constexpr Jump() : kind(Kind::jmp) {}
 
+    /// Unconditional or conditional branch based on flags.
     constexpr Jump(Kind kind) : kind(kind), cmp_is_32(false), test_bit(0) {
       assert(kind != Cbz && kind != Cbnz && kind != Tbz && kind != Tbnz);
     }
 
+    /// Cbz/Cbnz branch.
     constexpr Jump(Kind kind, AsmReg cmp_reg, bool cmp_is_32)
         : kind(kind), cmp_reg(cmp_reg), cmp_is_32(cmp_is_32), test_bit(0) {
       assert(kind == Cbz || kind == Cbnz);
     }
 
+    /// Tbz/Tbnz branch.
     constexpr Jump(Kind kind, AsmReg cmp_reg, u8 test_bit)
         : kind(kind), cmp_reg(cmp_reg), cmp_is_32(false), test_bit(test_bit) {
       assert(kind == Tbz || kind == Tbnz);
@@ -508,11 +512,7 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
   Jump invert_jump(Jump jmp) noexcept;
   Jump swap_jump(Jump jmp) noexcept;
 
-  void generate_branch_to_block(Jump jmp,
-                                IRBlockRef target,
-                                bool needs_split,
-                                bool last_inst) noexcept;
-
+  /// Generate jump instruction to target label.
   void generate_raw_jump(Jump jmp, Label target) noexcept;
 
   /// Convert jump condition to disarms Da64Cond.
@@ -531,8 +531,18 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
                            AsmReg false_select,
                            bool is_64) noexcept;
 
+  /// Integer extension. src is not modified.
   void generate_raw_intext(
       AsmReg dst, AsmReg src, bool sign, u32 from, u32 to) noexcept;
+
+  /// Bitfield insert. src is not modified.
+  void generate_raw_bfi(AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept {
+    ASM(BFIx, dst, src, lsb, width);
+  }
+  /// Bitfield insert in zero. src is not modified.
+  void generate_raw_bfiz(AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept {
+    ASM(UBFIZx, dst, src, lsb, width);
+  }
 
   /// Generate a function call
   ///
@@ -548,6 +558,36 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
                      std::span<CallArg> arguments,
                      typename Base::ValueRef *result,
                      bool variable_args = false);
+
+private:
+  /// @internal Emit compare of cmp_reg with case_value.
+  void switch_emit_cmp(AsmReg cmp_reg,
+                       AsmReg tmp_reg,
+                       u64 case_value,
+                       bool width_is_32) noexcept;
+
+public:
+  /// @internal Jump if cmp_reg equals case_value.
+  void switch_emit_cmpeq(Label case_label,
+                         AsmReg cmp_reg,
+                         AsmReg tmp_reg,
+                         u64 case_value,
+                         bool width_is_32) noexcept;
+  /// @internal Emit bounds check and jump table.
+  bool switch_emit_jump_table(Label default_label,
+                              std::span<const Label> labels,
+                              AsmReg cmp_reg,
+                              AsmReg tmp_reg,
+                              u64 low_bound,
+                              u64 high_bound,
+                              bool width_is_32) noexcept;
+  /// @internal Jump if cmp_reg is greater than case_value.
+  void switch_emit_binary_step(Label case_label,
+                               Label gt_label,
+                               AsmReg cmp_reg,
+                               AsmReg tmp_reg,
+                               u64 case_value,
+                               bool width_is_32) noexcept;
 
   /// Generate code sequence to load address of sym into a register. This will
   /// generate a function call for dynamic TLS access models.
@@ -668,7 +708,7 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::CallBuilder::call_impl(
   if (auto *sym = std::get_if<SymRef>(&target)) {
     ASMC(&this->compiler, BL, 0);
     this->compiler.reloc_text(
-        *sym, R_AARCH64_CALL26, this->compiler.text_writer.offset() - 4);
+        *sym, elf::R_AARCH64_CALL26, this->compiler.text_writer.offset() - 4);
   } else {
     ValuePart &tvp = std::get<ValuePart>(target);
     if (tvp.can_salvage()) {
@@ -688,36 +728,10 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::CallBuilder::call_impl(
 
 template <IRAdaptor Adaptor,
           typename Derived,
-          template <typename, typename, typename> class BaseTy,
-          typename Config>
-void CompilerA64<Adaptor, Derived, BaseTy, Config>::start_func(
-    const u32 /*func_idx*/) noexcept {
-  this->assembler.except_begin_func();
-  this->text_writer.align(16);
-}
-
-template <IRAdaptor Adaptor,
-          typename Derived,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
-void CompilerA64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
+void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_begin(
     CCAssigner *cc_assigner) noexcept {
-  // prologue:
-  // sub sp, sp, #<frame_size>
-  // stp x29, x30, [sp]
-  // mov x29, sp
-  // optionally create vararg save-area
-  // reserve space for callee-saved regs
-  //   4 byte per callee-saved reg pair since for each we do
-  //   stp r1, r2, [sp + XX]
-
-  // TODO(ts): for smaller functions we could enable an optimization
-  // to store the saved regs after the local variables
-  // which we could then use to not allocate space for unsaved regs
-  // which could help in the common case.
-  // However, we need to commit to this at the beginning of the function
-  // as otherwise stack accesses need to skip the reg-save area
-
   func_ret_offs.clear();
   func_start_off = this->text_writer.offset();
 
@@ -744,16 +758,12 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
     func_prologue_alloc = reg_save_size + 12;
     this->text_writer.ensure_space(func_prologue_alloc);
     this->text_writer.cur_ptr() += func_prologue_alloc;
-    // ldp needs the same number of instructions as stp
-    // additionally, there's an add sp, ldp x29/x30, ret (+12)
-    func_epilogue_alloc = reg_save_size + 12;
-    // extra mov sp, fp
-    func_epilogue_alloc += this->adaptor->cur_has_dynamic_alloca() ? 4 : 0;
   }
 
   // TODO(ts): support larger stack alignments?
 
   if (this->adaptor->cur_is_vararg()) [[unlikely]] {
+    this->stack.frame_used = true;
     reg_save_frame_off = this->stack.frame_size;
     // We additionally store a pointer to the stack area, which we can't compute
     // with a constant offset from the frame pointer. Add 16 bytes to maintain
@@ -770,81 +780,74 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
     ASMNC(STPq, DA_V(6), DA_V(7), DA_SP, reg_save_frame_off + 160);
   }
 
-  // Temporarily prevent argument registers from being assigned.
-  assert((cc_info.allocatable_regs & cc_info.arg_regs) == cc_info.arg_regs &&
-         "argument registers must also be allocatable");
-  this->register_file.allocatable &= ~cc_info.arg_regs;
-
   this->func_arg_stack_add_off = ~0u;
+}
 
-  u32 arg_idx = 0;
-  for (const IRValueRef arg : this->adaptor->cur_args()) {
-    derived()->handle_func_arg(
-        arg_idx,
-        arg,
-        [&](ValuePart &&vp, CCAssignment cca) -> std::optional<i32> {
-          if (!cca.byval) {
-            cca.bank = vp.bank();
-            cca.size = vp.part_size();
-          }
-
-          cc_assigner->assign_arg(cca);
-
-          if (cca.reg.valid()) [[likely]] {
-            vp.set_value_reg(this, cca.reg);
-            // Mark register as allocatable as soon as it is assigned. If the
-            // argument is unused, the register will be freed immediately and
-            // can be used for later stack arguments.
-            this->register_file.allocatable |= u64{1} << cca.reg.id();
-            return {};
-          }
-
-          AsmReg dst = vp.alloc_reg(this);
-
-          this->text_writer.ensure_space(8);
-          AsmReg stack_reg = AsmReg::R17;
-          // TODO: allocate an actual scratch register for this.
-          assert(
-              !(this->register_file.allocatable & (u64{1} << stack_reg.id())) &&
-              "x17 must not be allocatable");
-          if (this->func_arg_stack_add_off == ~0u) {
-            this->func_arg_stack_add_off = this->text_writer.offset();
-            this->func_arg_stack_add_reg = stack_reg;
-            // Fixed in finish_func when frame size is known
-            ASMNC(ADDxi, stack_reg, DA_SP, 0);
-          }
-
-          if (cca.byval) {
-            ASMNC(ADDxi, dst, stack_reg, cca.stack_off);
-          } else if (cca.bank == Config::GP_BANK) {
-            switch (cca.size) {
-            case 1: ASMNC(LDRBu, dst, stack_reg, cca.stack_off); break;
-            case 2: ASMNC(LDRHu, dst, stack_reg, cca.stack_off); break;
-            case 4: ASMNC(LDRwu, dst, stack_reg, cca.stack_off); break;
-            case 8: ASMNC(LDRxu, dst, stack_reg, cca.stack_off); break;
-            default: TPDE_UNREACHABLE("invalid GP reg size");
-            }
-          } else {
-            assert(cca.bank == Config::FP_BANK);
-            switch (cca.size) {
-            case 1: ASMNC(LDRbu, dst, stack_reg, cca.stack_off); break;
-            case 2: ASMNC(LDRhu, dst, stack_reg, cca.stack_off); break;
-            case 4: ASMNC(LDRsu, dst, stack_reg, cca.stack_off); break;
-            case 8: ASMNC(LDRdu, dst, stack_reg, cca.stack_off); break;
-            case 16: ASMNC(LDRqu, dst, stack_reg, cca.stack_off); break;
-            default: TPDE_UNREACHABLE("invalid FP reg size");
-            }
-          }
-          return {};
-        });
-
-    arg_idx += 1;
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+std::optional<i32>
+    CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_assign_arg_part(
+        ValuePart &&vp, CCAssignment cca) noexcept {
+  if (cca.reg.valid()) [[likely]] {
+    vp.set_value_reg(this, cca.reg);
+    // Mark register as allocatable as soon as it is assigned. If the argument
+    // is unused, the register will be freed immediately and can be used for
+    // later stack arguments.
+    this->register_file.allocatable |= u64{1} << cca.reg.id();
+    return {};
   }
 
+  AsmReg dst = vp.alloc_reg(this);
+
+  this->text_writer.ensure_space(8);
+  AsmReg stack_reg = AsmReg::R17;
+  // TODO: allocate an actual scratch register for this.
+  assert(!(this->register_file.allocatable & (u64{1} << stack_reg.id())) &&
+         "x17 must not be allocatable");
+  if (this->func_arg_stack_add_off == ~0u) {
+    this->func_arg_stack_add_off = this->text_writer.offset();
+    this->func_arg_stack_add_reg = stack_reg;
+    // Fixed in finish_func when frame size is known
+    ASMNC(ADDxi, stack_reg, DA_SP, 0);
+  }
+
+  if (cca.byval) {
+    ASMNC(ADDxi, dst, stack_reg, cca.stack_off);
+  } else if (cca.bank == Config::GP_BANK) {
+    switch (cca.size) {
+    case 1: ASMNC(LDRBu, dst, stack_reg, cca.stack_off); break;
+    case 2: ASMNC(LDRHu, dst, stack_reg, cca.stack_off); break;
+    case 4: ASMNC(LDRwu, dst, stack_reg, cca.stack_off); break;
+    case 8: ASMNC(LDRxu, dst, stack_reg, cca.stack_off); break;
+    default: TPDE_UNREACHABLE("invalid GP reg size");
+    }
+  } else {
+    assert(cca.bank == Config::FP_BANK);
+    switch (cca.size) {
+    case 1: ASMNC(LDRbu, dst, stack_reg, cca.stack_off); break;
+    case 2: ASMNC(LDRhu, dst, stack_reg, cca.stack_off); break;
+    case 4: ASMNC(LDRsu, dst, stack_reg, cca.stack_off); break;
+    case 8: ASMNC(LDRdu, dst, stack_reg, cca.stack_off); break;
+    case 16: ASMNC(LDRqu, dst, stack_reg, cca.stack_off); break;
+    default: TPDE_UNREACHABLE("invalid FP reg size");
+    }
+  }
+  return {};
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_end(
+    CCAssigner *cc_assigner) noexcept {
   // Hack: we don't know the frame size, so for a va_start(), we cannot easily
   // compute the offset from the frame pointer. But we have a stack_reg here,
   // so use it for var args.
   if (this->adaptor->cur_is_vararg()) [[unlikely]] {
+    this->stack.frame_used = true;
     AsmReg stack_reg = AsmReg::R17;
     // TODO: allocate an actual scratch register for this.
     assert(!(this->register_file.allocatable & (u64{1} << stack_reg.id())) &&
@@ -861,14 +864,13 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
     // TODO: extract ngrn/nsrn from CCAssigner
     // TODO: this isn't quite accurate, e.g. for (i128, i128, i128, i64, i128),
     // this should be 8 but will end up with 7.
+    const CCInfo &cc_info = cc_assigner->get_ccinfo();
     auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
     u32 ngrn = 8 - util::cnt_lz<u16>((arg_regs & 0xff) << 8 | 0x80);
     u32 nsrn = 8 - util::cnt_lz<u16>(((arg_regs >> 32) & 0xff) << 8 | 0x80);
     this->scalar_arg_count = ngrn;
     this->vec_arg_count = nsrn;
   }
-
-  this->register_file.allocatable |= cc_info.arg_regs;
 }
 
 template <IRAdaptor Adaptor,
@@ -880,9 +882,8 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
   auto csr = derived()->cur_cc_assigner()->get_ccinfo().callee_saved_regs;
   u64 saved_regs = this->register_file.clobbered & csr;
 
-  const auto dyn_alloca = this->adaptor->cur_has_dynamic_alloca();
   auto stack_reg = DA_SP;
-  if (dyn_alloca) {
+  if (this->stack.has_dynamic_alloca) {
     stack_reg = DA_GP(29);
   }
 
@@ -893,32 +894,65 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
     assert(final_frame_size < 16 * 1024 * 1024);
   }
 
-  auto fde_off = this->assembler.eh_begin_fde(this->get_personality_sym());
+  bool needs_stack_frame =
+      this->stack.frame_used || this->stack.generated_call ||
+      this->stack.has_dynamic_alloca || saved_regs != 0 ||
+      (this->register_file.clobbered & (u64{1} << AsmReg::LR));
 
-  {
+  this->text_writer.eh_begin_fde(this->get_personality_sym());
+
+  u32 prologue_size = 0;
+  if (needs_stack_frame) [[likely]] {
     // NB: code alignment factor 4, data alignment factor -8.
     util::SmallVector<u32, 16> prologue;
-    prologue.push_back(de64_SUBxi(DA_SP, DA_SP, final_frame_size));
-    this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 1);
-    this->assembler.eh_write_inst(dwarf::DW_CFA_def_cfa_offset,
-                                  final_frame_size);
-    prologue.push_back(de64_STPx(DA_GP(29), DA_GP(30), DA_SP, 0));
-    prologue.push_back(de64_MOV_SPx(DA_GP(29), DA_SP));
-    this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 2);
-    this->assembler.eh_write_inst(dwarf::DW_CFA_def_cfa_register,
-                                  dwarf::a64::DW_reg_fp);
-    this->assembler.eh_write_inst(
-        dwarf::DW_CFA_offset, dwarf::a64::DW_reg_fp, final_frame_size / 8);
-    this->assembler.eh_write_inst(
-        dwarf::DW_CFA_offset, dwarf::a64::DW_reg_lr, final_frame_size / 8 - 1);
+    // For small stack frames, remember the state at the very beginning, which
+    // is identical to the state after the post-increment LDP. For large stack
+    // frames, remember the state after the SP adjustment (encoding the
+    // corresponding DW_def_cfa SP, framesize would be >=3 bytes; this way we
+    // can get away with a DW_def_cfa_offset 0 after the ADD).
+    if (!func_ret_offs.empty() && final_frame_size <= 0x1f8) {
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_remember_state);
+    }
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 1);
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_def_cfa_offset,
+                                    final_frame_size);
+    if (final_frame_size <= 0x1f8) {
+      prologue.push_back(
+          de64_STPx_pre(DA_GP(29), DA_GP(30), DA_SP, -int(final_frame_size)));
+      prologue.push_back(de64_MOV_SPx(DA_GP(29), DA_SP));
+    } else {
+      if (!func_ret_offs.empty()) {
+        this->text_writer.eh_write_inst(dwarf::DW_CFA_remember_state);
+      }
+      prologue.push_back(de64_SUBxi(DA_SP, DA_SP, final_frame_size));
+      prologue.push_back(de64_STPx(DA_GP(29), DA_GP(30), DA_SP, 0));
+      prologue.push_back(de64_MOV_SPx(DA_GP(29), DA_SP));
+    }
 
     // Patched below
-    auto fde_prologue_adv_off = this->assembler.eh_writer.size();
-    this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 0);
+    auto fde_prologue_adv_off = this->text_writer.eh_writer.size();
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 0);
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_def_cfa_register,
+                                    dwarf::a64::DW_reg_fp);
+    this->text_writer.eh_write_inst(
+        dwarf::DW_CFA_offset, dwarf::a64::DW_reg_fp, final_frame_size / 8);
+    this->text_writer.eh_write_inst(
+        dwarf::DW_CFA_offset, dwarf::a64::DW_reg_lr, final_frame_size / 8 - 1);
 
     AsmReg last_reg = AsmReg::make_invalid();
     u32 frame_off = 16;
     for (auto reg : util::BitSetIterator{saved_regs}) {
+      u8 dwarf_base = reg < 32 ? dwarf::a64::DW_reg_x0 : dwarf::a64::DW_reg_v0;
+      u8 dwarf_reg = dwarf_base + reg % 32;
+      u32 cfa_off = (final_frame_size - frame_off) / 8 - last_reg.valid();
+      if ((dwarf_reg & dwarf::DWARF_CFI_PRIMARY_OPCODE_MASK) == 0) {
+        this->text_writer.eh_write_inst(
+            dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
+      } else {
+        this->text_writer.eh_write_inst(
+            dwarf::DW_CFA_offset_extended, dwarf_reg, cfa_off);
+      }
+
       if (last_reg.valid()) {
         const auto reg_bank = this->register_file.reg_bank(AsmReg{reg});
         const auto last_bank = this->register_file.reg_bank(last_reg);
@@ -938,20 +972,9 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
           frame_off += 8;
           last_reg = AsmReg{reg};
         }
-        continue;
-      }
-
-      u8 dwarf_base = reg < 32 ? dwarf::a64::DW_reg_v0 : dwarf::a64::DW_reg_x0;
-      u8 dwarf_reg = dwarf_base + reg % 32;
-      u32 cfa_off = (final_frame_size - frame_off) / 8;
-      if ((dwarf_reg & dwarf::DWARF_CFI_PRIMARY_OPCODE_MASK) == 0) {
-        this->assembler.eh_write_inst(dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
       } else {
-        this->assembler.eh_write_inst(
-            dwarf::DW_CFA_offset_extended, dwarf_reg, cfa_off);
+        last_reg = AsmReg{reg};
       }
-
-      last_reg = AsmReg{reg};
     }
 
     if (last_reg.valid()) {
@@ -966,55 +989,42 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
     assert(prologue.size() * sizeof(u32) <= func_prologue_alloc);
 
     assert(prologue.size() < 0x4c);
-    this->assembler.eh_writer.data()[fde_prologue_adv_off] =
-        dwarf::DW_CFA_advance_loc | (prologue.size() - 3);
+    this->text_writer.eh_writer.data()[fde_prologue_adv_off] =
+        dwarf::DW_CFA_advance_loc | (prologue.size() - 1);
 
-    // Pad with NOPs so that func_prologue_alloc - prologue.size() is a
-    // multiple if 16 (the function alignment).
-    const auto nop_count = (func_prologue_alloc / 4 - prologue.size()) % 4;
-    const auto nop = de64_NOP();
-    for (auto i = 0u; i < nop_count; ++i) {
-      prologue.push_back(nop);
-    }
-
-    // Shrink function at the beginning
-    u32 skip = util::align_down(func_prologue_alloc - prologue.size() * 4, 16);
-    std::memset(this->text_writer.begin_ptr() + func_start_off, 0, skip);
-    func_start_off += skip;
     std::memcpy(this->text_writer.begin_ptr() + func_start_off,
                 prologue.data(),
                 prologue.size() * sizeof(u32));
+
+    prologue_size = prologue.size() * sizeof(u32);
   }
 
   if (func_arg_stack_add_off != ~0u) {
-    auto *inst_ptr = this->text_writer.begin_ptr() + func_arg_stack_add_off;
-    *reinterpret_cast<u32 *>(inst_ptr) =
-        de64_ADDxi(func_arg_stack_add_reg, DA_SP, final_frame_size);
-  }
-
-  // TODO(ts): honor cur_needs_unwind_info
-  auto func_sym = this->func_syms[func_idx];
-  auto func_sec = this->text_writer.get_sec_ref();
-
-  if (func_ret_offs.empty()) {
-    auto func_size = this->text_writer.offset() - func_start_off;
-    this->assembler.sym_def(func_sym, func_sec, func_start_off, func_size);
-    this->assembler.eh_end_fde(fde_off, func_sym);
-    this->assembler.except_encode_func(func_sym,
-                                       this->text_writer.label_offsets.data());
-    return;
-  }
-
-  auto *text_data = this->text_writer.begin_ptr();
-  u32 first_ret_off = func_ret_offs[0];
-  u32 ret_size = 0;
-  {
-    u32 *write_ptr = reinterpret_cast<u32 *>(text_data + first_ret_off);
-    const auto ret_start = write_ptr;
-    if (dyn_alloca) {
-      *write_ptr++ = de64_MOV_SPx(DA_SP, DA_GP(29));
+    auto *raw_inst_ptr = this->text_writer.begin_ptr() + func_arg_stack_add_off;
+    u32 *inst_ptr = reinterpret_cast<u32 *>(raw_inst_ptr);
+    if (needs_stack_frame) {
+      *inst_ptr = de64_ADDxi(func_arg_stack_add_reg, DA_SP, final_frame_size);
     } else {
-      *write_ptr++ = de64_LDPx(DA_GP(29), DA_GP(30), DA_SP, 0);
+      *inst_ptr = de64_MOV_SPx(func_arg_stack_add_reg, DA_SP);
+    }
+  }
+
+  if (!func_ret_offs.empty()) {
+    u8 *text_data = this->text_writer.begin_ptr();
+    if (func_ret_offs.back() == this->text_writer.offset() - 4) {
+      this->text_writer.cur_ptr() -= 4;
+      func_ret_offs.pop_back();
+    }
+    for (auto ret_off : func_ret_offs) {
+      u32 *write_ptr = reinterpret_cast<u32 *>(text_data + ret_off);
+      *write_ptr = de64_B((this->text_writer.offset() - ret_off) / 4);
+    }
+
+    // Epilogue mirrors prologue + RET
+    this->text_writer.ensure_space(prologue_size + 4);
+
+    if (this->stack.has_dynamic_alloca) {
+      ASMNC(MOV_SPx, DA_SP, DA_GP(29));
     }
 
     AsmReg last_reg = AsmReg::make_invalid();
@@ -1025,17 +1035,15 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
         const auto last_bank = this->register_file.reg_bank(last_reg);
         if (reg_bank == last_bank) {
           if (reg_bank == Config::GP_BANK) {
-            *write_ptr++ =
-                de64_LDPx(last_reg, AsmReg{reg}, stack_reg, frame_off);
+            ASMNC(LDPx, last_reg, AsmReg{reg}, stack_reg, frame_off);
           } else {
-            *write_ptr++ =
-                de64_LDPd(last_reg, AsmReg{reg}, stack_reg, frame_off);
+            ASMNC(LDPd, last_reg, AsmReg{reg}, stack_reg, frame_off);
           }
           frame_off += 16;
           last_reg = AsmReg::make_invalid();
         } else {
           assert(last_bank == Config::GP_BANK && reg_bank == Config::FP_BANK);
-          *write_ptr++ = de64_LDRxu(last_reg, stack_reg, frame_off);
+          ASMNC(LDRxu, last_reg, stack_reg, frame_off);
           frame_off += 8;
           last_reg = AsmReg{reg};
         }
@@ -1047,40 +1055,39 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(
 
     if (last_reg.valid()) {
       if (this->register_file.reg_bank(last_reg) == Config::GP_BANK) {
-        *write_ptr++ = de64_LDRxu(last_reg, stack_reg, frame_off);
+        ASMNC(LDRxu, last_reg, stack_reg, frame_off);
       } else {
-        *write_ptr++ = de64_LDRdu(last_reg, stack_reg, frame_off);
+        ASMNC(LDRdu, last_reg, stack_reg, frame_off);
+      }
+    }
+    if (needs_stack_frame) {
+      u32 body_start = func_start_off + func_prologue_alloc;
+      this->text_writer.eh_advance(this->text_writer.offset() - body_start + 4);
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_restore_state);
+      if (final_frame_size <= 0x1f8) {
+        ASMNC(LDPx_post, DA_GP(29), DA_GP(30), DA_SP, final_frame_size);
+        // CFI is correct here.
+      } else {
+        ASMNC(LDPx, DA_GP(29), DA_GP(30), DA_SP, 0);
+        // CFI is correct here, but we need to update the CFA after the ADD.
+        ASMNC(ADDxi, DA_SP, DA_SP, final_frame_size);
+        this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 1);
+        this->text_writer.eh_write_inst(dwarf::DW_CFA_def_cfa_offset, 0);
       }
     }
 
-    if (dyn_alloca) {
-      *write_ptr++ = de64_LDPx(DA_GP(29), DA_GP(30), DA_SP, 0);
-    }
-
-    *write_ptr++ = de64_ADDxi(DA_SP, DA_SP, final_frame_size);
-    *write_ptr++ = de64_RET(DA_GP(30));
-
-    ret_size = (write_ptr - ret_start) * 4;
-    assert(ret_size <= func_epilogue_alloc);
-    std::memset(write_ptr, 0, func_epilogue_alloc - ret_size);
+    ASMNC(RET, DA_GP(30));
   }
 
-  for (u32 i = 1; i < func_ret_offs.size(); ++i) {
-    std::memcpy(text_data + func_ret_offs[i],
-                text_data + first_ret_off,
-                func_epilogue_alloc);
-  }
-
-  u32 func_end_ret_off = this->text_writer.offset() - func_epilogue_alloc;
-  if (func_ret_offs.back() == func_end_ret_off) {
-    this->text_writer.cur_ptr() -= func_epilogue_alloc - ret_size;
-  }
-
+  // TODO(ts): honor cur_needs_unwind_info
+  this->text_writer.remove_prologue_bytes(func_start_off + prologue_size,
+                                          func_prologue_alloc - prologue_size);
   auto func_size = this->text_writer.offset() - func_start_off;
+  auto func_sym = this->func_syms[func_idx];
+  auto func_sec = this->text_writer.get_sec_ref();
   this->assembler.sym_def(func_sym, func_sec, func_start_off, func_size);
-  this->assembler.eh_end_fde(fde_off, func_sym);
-  this->assembler.except_encode_func(func_sym,
-                                     this->text_writer.label_offsets.data());
+  this->text_writer.eh_end_fde();
+  this->text_writer.except_encode_func();
 }
 
 template <IRAdaptor Adaptor,
@@ -1097,27 +1104,10 @@ template <IRAdaptor Adaptor,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
 void CompilerA64<Adaptor, Derived, BaseTy, Config>::gen_func_epilog() noexcept {
-  // epilogue:
-  // if !func_has_dynamic_alloca:
-  //   ldp x29, x30, [sp]
-  // else:
-  //   mov sp, fp
-  // for each saved reg pair:
-  //   if func_has_dynamic_alloca:
-  //     ldp r1, r2, [fp, #<off>]
-  //   else:
-  //     ldp r1, r2, [sp, #<off>]
-  // if func_has_dynamic_alloca:
-  //   ldp x29, x30, [sp]
-  // add sp, sp, #<frame_size>
-  // ret
-  //
-  // however, since we will later patch this, we only
-  // reserve the space for now
-
+  // Patched at the end, just reserve the space here.
   func_ret_offs.push_back(this->text_writer.offset());
-  this->text_writer.ensure_space(func_epilogue_alloc);
-  this->text_writer.cur_ptr() += func_epilogue_alloc;
+  this->text_writer.ensure_space(4); // Single branch to actual epilogue.
+  this->text_writer.cur_ptr() += 4;
 }
 
 template <IRAdaptor Adaptor,
@@ -1126,6 +1116,7 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerA64<Adaptor, Derived, BaseTy, Config>::spill_reg(
     const AsmReg reg, const u32 frame_off, const u32 size) noexcept {
+  assert(this->stack.frame_used);
   assert((size & (size - 1)) == 0);
   assert(util::align_up(frame_off, size) == frame_off);
   // We don't support stack frames that aren't encodeable with add/sub.
@@ -1171,6 +1162,7 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::load_from_stack(
     const i32 frame_off,
     const u32 size,
     const bool sign_extend) noexcept {
+  assert(this->stack.frame_used);
   assert((size & (size - 1)) == 0);
   assert(util::align_up(frame_off, size) == frame_off);
   // We don't support stack frames that aren't encodeable with add/sub.
@@ -1225,6 +1217,7 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerA64<Adaptor, Derived, BaseTy, Config>::load_address_of_stack_var(
     const AsmReg dst, const AssignmentPartRef ap) noexcept {
+  assert(this->stack.frame_used);
   auto frame_off = ap.variable_stack_off();
   assert(frame_off >= 0);
   if (!ASMIF(ADDxi, dst, DA_GP(29), frame_off)) {
@@ -1358,6 +1351,8 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerA64<Adaptor, Derived, BaseTy, Config>::alloca_fixed(
     u64 size, u32 align, ValuePart &res) noexcept {
+  assert(this->stack.has_dynamic_alloca &&
+         "function marked as not having dynamic allocas can't have alloca");
   assert(align != 0 && (align & (align - 1)) == 0 && "invalid alignment");
   size = tpde::util::align_up(size, 16);
   AsmReg res_reg = res.alloc_reg(this);
@@ -1388,6 +1383,8 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerA64<Adaptor, Derived, BaseTy, Config>::alloca_dynamic(
     u64 elem_size, ValuePart &&count, u32 align, ValuePart &res) noexcept {
+  assert(this->stack.has_dynamic_alloca &&
+         "function marked as not having dynamic allocas can't have alloca");
   assert(align != 0 && (align & (align - 1)) == 0 && "invalid alignment");
   AsmReg size_reg = count.has_reg() ? count.cur_reg() : count.load_to_reg(this);
   AsmReg res_reg = res.alloc_try_reuse(this, count);
@@ -1486,10 +1483,10 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::materialize_constant(
         rodata, "", raw_data, 16, Assembler::SymBinding::LOCAL);
     this->text_writer.ensure_space(8); // ensure contiguous instructions
     this->reloc_text(
-        sym, R_AARCH64_ADR_PREL_PG_HI21, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_ADR_PREL_PG_HI21, this->text_writer.offset(), 0);
     ASMNC(ADRP, permanent_scratch_reg, 0, 0);
     this->reloc_text(
-        sym, R_AARCH64_LDST128_ABS_LO12_NC, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_LDST128_ABS_LO12_NC, this->text_writer.offset(), 0);
     ASMNC(LDRqu, dst, permanent_scratch_reg, 0);
     return;
   }
@@ -1525,7 +1522,7 @@ AsmReg
 
   u64 possible_regs;
   auto csr = derived()->cur_cc_assigner()->get_ccinfo().callee_saved_regs;
-  if (derived()->cur_func_may_emit_calls()) {
+  if (!this->stack.is_leaf_function) {
     // we can only allocated fixed assignments from the callee-saved regs
     possible_regs = find_possible_regs(csr);
   } else {
@@ -1627,34 +1624,6 @@ typename CompilerA64<Adaptor, Derived, BaseTy, Config>::Jump
   case Jump::Tbz:
   case Jump::Tbnz:
   default: TPDE_UNREACHABLE("invalid jump kind for swap_jump");
-  }
-}
-
-template <IRAdaptor Adaptor,
-          typename Derived,
-          template <typename, typename, typename> typename BaseTy,
-          typename Config>
-void CompilerA64<Adaptor, Derived, BaseTy, Config>::generate_branch_to_block(
-    const Jump jmp,
-    IRBlockRef target,
-    const bool needs_split,
-    const bool last_inst) noexcept {
-  const auto target_idx = this->analyzer.block_idx(target);
-  if (!needs_split || jmp.kind == Jump::jmp) {
-    this->derived()->move_to_phi_nodes(target_idx);
-
-    if (!last_inst || this->analyzer.block_idx(target) != this->next_block()) {
-      generate_raw_jump(jmp, this->block_labels[(u32)target_idx]);
-    }
-  } else {
-    auto tmp_label = this->text_writer.label_create();
-    generate_raw_jump(invert_jump(jmp), tmp_label);
-
-    this->derived()->move_to_phi_nodes(target_idx);
-
-    generate_raw_jump(Jump::jmp, this->block_labels[(u32)target_idx]);
-
-    this->label_place(tmp_label);
   }
 }
 
@@ -1979,12 +1948,117 @@ template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
+void CompilerA64<Adaptor, Derived, BaseTy, Config>::switch_emit_cmp(
+    AsmReg cmp_reg, AsmReg tmp_reg, u64 case_value, bool width_is_32) noexcept {
+  if (width_is_32) {
+    if (!ASMIF(CMPwi, cmp_reg, case_value)) {
+      materialize_constant(case_value, Config::GP_BANK, 4, tmp_reg);
+      ASM(CMPw, cmp_reg, tmp_reg);
+    }
+  } else {
+    if (!ASMIF(CMPxi, cmp_reg, case_value)) {
+      materialize_constant(case_value, Config::GP_BANK, 4, tmp_reg);
+      ASM(CMPx, cmp_reg, tmp_reg);
+    }
+  }
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerA64<Adaptor, Derived, BaseTy, Config>::switch_emit_cmpeq(
+    Label case_label,
+    AsmReg cmp_reg,
+    AsmReg tmp_reg,
+    u64 case_value,
+    bool width_is_32) noexcept {
+  switch_emit_cmp(cmp_reg, tmp_reg, case_value, width_is_32);
+  generate_raw_jump(Jump::Jeq, case_label);
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+bool CompilerA64<Adaptor, Derived, BaseTy, Config>::switch_emit_jump_table(
+    Label default_label,
+    std::span<const Label> labels,
+    AsmReg cmp_reg,
+    AsmReg tmp_reg,
+    u64 low_bound,
+    u64 high_bound,
+    bool width_is_32) noexcept {
+  if (low_bound != 0) {
+    switch_emit_cmp(cmp_reg, tmp_reg, low_bound, width_is_32);
+    generate_raw_jump(Jump::Jcc, default_label);
+  }
+  switch_emit_cmp(cmp_reg, tmp_reg, high_bound, width_is_32);
+  generate_raw_jump(Jump::Jhi, default_label);
+
+  if (low_bound != 0) {
+    if (!ASMIF(SUBxi, cmp_reg, cmp_reg, low_bound)) {
+      this->materialize_constant(&low_bound, Config::GP_BANK, 8, tmp_reg);
+      ASM(SUBx, cmp_reg, cmp_reg, tmp_reg);
+    }
+  }
+
+  // TODO: move jump table to read-only data section.
+  this->text_writer.ensure_space(4 * 4 + 4 * labels.size());
+
+  Label jump_table = this->text_writer.label_create();
+  u32 adr_off = this->text_writer.offset();
+  this->text_writer.write_unchecked(u32(0)); // ADR tmp_reg, patched below.
+
+  if (width_is_32) {
+    ASMNC(LDRSWxr_uxtw, cmp_reg, tmp_reg, cmp_reg, /*scale=*/true);
+  } else {
+    ASMNC(LDRSWxr_lsl, cmp_reg, tmp_reg, cmp_reg, /*scale=*/true);
+  }
+  ASMNC(ADDx, tmp_reg, tmp_reg, cmp_reg);
+  ASMNC(BR, tmp_reg);
+
+  u32 table_off = this->text_writer.offset();
+  this->text_writer.label_place(jump_table, table_off);
+  for (Label label : labels) {
+    this->text_writer.label_ref(
+        label, this->text_writer.offset(), LabelFixupKind::AARCH64_JUMP_TABLE);
+    this->text_writer.write_unchecked(table_off);
+  }
+
+  assert(table_off - adr_off <= 1 * 1024 * 1024); // ADR has a 1 MiB range.
+  u32 *adr = reinterpret_cast<u32 *>(this->text_writer.begin_ptr() + adr_off);
+  *adr = de64_ADR(tmp_reg, adr_off, table_off);
+  return true;
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerA64<Adaptor, Derived, BaseTy, Config>::switch_emit_binary_step(
+    Label case_label,
+    Label gt_label,
+    AsmReg cmp_reg,
+    AsmReg tmp_reg,
+    u64 case_value,
+    bool width_is_32) noexcept {
+  switch_emit_cmpeq(case_label, cmp_reg, tmp_reg, case_value, width_is_32);
+  generate_raw_jump(Jump::Jhi, gt_label);
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
 CompilerA64<Adaptor, Derived, BaseTy, Config>::ScratchReg
     CompilerA64<Adaptor, Derived, BaseTy, Config>::tls_get_addr(
         SymRef sym, TLSModel model) noexcept {
   switch (model) {
   default: // TODO: implement optimized access for non-gd-model
   case TLSModel::GlobalDynamic: {
+    assert(!this->stack.is_leaf_function);
+    this->stack.generated_call = true;
     ScratchReg r0_scratch{this};
     AsmReg r0 = r0_scratch.alloc_specific(AsmReg::R0);
     ScratchReg r1_scratch{this};
@@ -1997,16 +2071,16 @@ CompilerA64<Adaptor, Derived, BaseTy, Config>::ScratchReg
 
     this->text_writer.ensure_space(0x18);
     this->reloc_text(
-        sym, R_AARCH64_TLSDESC_ADR_PAGE21, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_TLSDESC_ADR_PAGE21, this->text_writer.offset(), 0);
     ASMNC(ADRP, r0, 0, 0);
     this->reloc_text(
-        sym, R_AARCH64_TLSDESC_LD64_LO12, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_TLSDESC_LD64_LO12, this->text_writer.offset(), 0);
     ASMNC(LDRxu, r1, r0, 0);
     this->reloc_text(
-        sym, R_AARCH64_TLSDESC_ADD_LO12, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_TLSDESC_ADD_LO12, this->text_writer.offset(), 0);
     ASMNC(ADDxi, r0, r0, 0);
     this->reloc_text(
-        sym, R_AARCH64_TLSDESC_CALL, this->text_writer.offset(), 0);
+        sym, elf::R_AARCH64_TLSDESC_CALL, this->text_writer.offset(), 0);
     ASMNC(BLR, r1);
     ASMNC(MRS, r1, 0xde82); // TPIDR_EL0
     // TODO: maybe return expr x0+x1.

@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #pragma once
 
-#include <elf.h>
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/ConstantFolding.h>
@@ -12,6 +11,7 @@
 #include <llvm/IR/GlobalIFunc.h>
 #include <llvm/IR/GlobalObject.h>
 #include <llvm/IR/GlobalValue.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
@@ -23,7 +23,7 @@
 #include <llvm/Support/TimeProfiler.h>
 #include <llvm/Support/raw_ostream.h>
 
-
+#include "tpde/Assembler.hpp"
 #include "tpde/CompilerBase.hpp"
 #include "tpde/ValLocalIdx.hpp"
 #include "tpde/ValueAssignment.hpp"
@@ -54,7 +54,6 @@ struct LLVMCompilerBase : public LLVMCompiler,
   using GenericValuePart = typename Base::GenericValuePart;
   using InstRange = typename Base::InstRange;
 
-  using Assembler = typename Base::Assembler;
   using SecRef = typename tpde::SecRef;
   using SymRef = typename tpde::SymRef;
 
@@ -302,26 +301,34 @@ struct LLVMCompilerBase : public LLVMCompiler,
     return res;
   }
 
-private:
-  static typename Assembler::SymBinding
-      convert_linkage(const llvm::GlobalValue *gv) noexcept {
-    if (gv->hasLocalLinkage()) {
-      return Assembler::SymBinding::LOCAL;
-    } else if (gv->isWeakForLinker()) {
-      return Assembler::SymBinding::WEAK;
-    }
-    return Assembler::SymBinding::GLOBAL;
+  void prologue_assign_arg(tpde::CCAssigner *cc_assigner,
+                           u32 arg_idx,
+                           IRValueRef arg) noexcept {
+    u32 align = arg->getType()->isIntegerTy(128) ? 16 : 1;
+    bool allow_split = derived()->arg_allow_split_reg_stack_passing(arg);
+    Base::prologue_assign_arg(cc_assigner, arg_idx, arg, align, allow_split);
   }
 
-  static typename Assembler::SymVisibility
+private:
+  static tpde::Assembler::SymBinding
+      convert_linkage(llvm::GlobalValue::LinkageTypes linkage) noexcept {
+    if (llvm::GlobalValue::isLocalLinkage(linkage)) {
+      return tpde::Assembler::SymBinding::LOCAL;
+    } else if (llvm::GlobalValue::isWeakForLinker(linkage)) {
+      return tpde::Assembler::SymBinding::WEAK;
+    }
+    return tpde::Assembler::SymBinding::GLOBAL;
+  }
+
+  static tpde::elf::AssemblerElf::SymVisibility
       convert_visibility(const llvm::GlobalValue *gv) noexcept {
     switch (gv->getVisibility()) {
     case llvm::GlobalValue::DefaultVisibility:
-      return Assembler::SymVisibility::DEFAULT;
+      return tpde::elf::AssemblerElf::SymVisibility::DEFAULT;
     case llvm::GlobalValue::HiddenVisibility:
-      return Assembler::SymVisibility::HIDDEN;
+      return tpde::elf::AssemblerElf::SymVisibility::HIDDEN;
     case llvm::GlobalValue::ProtectedVisibility:
-      return Assembler::SymVisibility::PROTECTED;
+      return tpde::elf::AssemblerElf::SymVisibility::PROTECTED;
     default: TPDE_UNREACHABLE("invalid global visibility");
     }
   }
@@ -384,6 +391,8 @@ public:
   void setup_var_ref_assignments() noexcept {}
 
   bool compile_func(IRFuncRef func, u32 idx) noexcept {
+    time_entry = nullptr;
+
     // Reuse/release memory for stored constants from previous function
     const_allocator.reset();
 
@@ -400,7 +409,15 @@ public:
 
     // We might encounter types that are unsupported during compilation, which
     // cause the flag in the adaptor to be set. In such cases, return false.
-    return Base::compile_func(func, idx) && !this->adaptor->func_unsupported;
+    const bool res =
+        (Base::compile_func(func, idx) && !this->adaptor->func_unsupported);
+
+    // end the TPDE_CodeGen time trace entry
+    if (time_entry) {
+      llvm::timeTraceProfilerEnd(time_entry);
+      time_entry = nullptr;
+    }
+    return res;
   }
 
   bool compile(llvm::Module &mod) noexcept;
@@ -501,13 +518,15 @@ public:
                            const ValInfo &,
                            u64) noexcept;
   bool compile_resume(const llvm::Instruction *, const ValInfo &, u64) noexcept;
-  SymRef lookup_type_info_sym(IRValueRef value) noexcept;
+  SymRef lookup_type_info_sym(const llvm::GlobalValue *value) noexcept;
   bool compile_intrin(const llvm::IntrinsicInst *, const ValInfo &) noexcept;
   bool compile_is_fpclass(const llvm::IntrinsicInst *) noexcept;
   bool compile_overflow_intrin(const llvm::IntrinsicInst *,
                                OverflowOp) noexcept;
   bool compile_saturating_intrin(const llvm::IntrinsicInst *,
                                  OverflowOp) noexcept;
+  bool compile_vector_reduce(const llvm::IntrinsicInst *,
+                             const ValInfo &) noexcept;
 
 
   bool compile_br(const llvm::Instruction *, const ValInfo &, u64) noexcept {
@@ -515,10 +534,6 @@ public:
   }
 
   bool compile_inline_asm(const llvm::CallBase *) { return false; }
-
-  bool compile_icmp(const llvm::ICmpInst *, InstRange) noexcept {
-    return false;
-  }
 
   bool handle_intrin(const llvm::IntrinsicInst *) noexcept { return false; }
 
@@ -558,7 +573,7 @@ void LLVMCompilerBase<Adaptor, Derived, Config>::analysis_start() noexcept {
 
 template <typename Adaptor, typename Derived, typename Config>
 void LLVMCompilerBase<Adaptor, Derived, Config>::analysis_end() noexcept {
-  if (llvm::timeTraceProfilerEnabled()) {
+  if (time_entry) {
     llvm::timeTraceProfilerEnd(time_entry);
     time_entry = llvm::timeTraceProfilerBegin("TPDE_CodeGen", "");
   }
@@ -696,8 +711,13 @@ typename LLVMCompilerBase<Adaptor, Derived, Config>::ValuePart
 
   std::string const_str;
   llvm::raw_string_ostream(const_str) << *const_val;
-  TPDE_LOG_ERR("encountered unhandled constant {}", const_str);
-  TPDE_FATAL("unhandled constant type");
+  TPDE_LOG_ERR("unhandled constant in operand: {}", const_str);
+  this->adaptor->func_unsupported = true;
+
+  // Try to keep going with a null constant.
+  static const std::array<u64, 8> zero{};
+  assert(size <= zero.size() * sizeof(u64));
+  return ValuePart(zero.data(), size, bank);
 }
 
 template <typename Adaptor, typename Derived, typename Config>
@@ -749,7 +769,7 @@ LLVMCompilerBase<Adaptor, Derived, Config>::SecRef
       // Create a new symbol if no equally named global, thus symbol, exists.
       // The symbol will be STB_LOCAL, STT_NOTYPE, section=group.
       group_sym =
-          this->assembler.sym_add_undef(cn, Assembler::SymBinding::LOCAL);
+          this->assembler.sym_add_undef(cn, tpde::Assembler::SymBinding::LOCAL);
       define_group_sym = true;
     }
     it->second = this->assembler.create_group_section(group_sym, is_comdat);
@@ -773,89 +793,55 @@ LLVMCompilerBase<Adaptor, Derived, Config>::SecRef
   }
 
   // I'm certain this simplified section assignment code is buggy...
-  bool tls = false;
-  bool read_only = true;
-  bool init_zero = false;
-  bool is_func = llvm::isa<llvm::Function>(go);
-  bool retain = used_globals.contains(go);
-  if (auto *gv = llvm::dyn_cast<llvm::GlobalVariable>(go)) {
-    tls = gv->isThreadLocal();
-    read_only = gv->isConstant();
-    init_zero = gv->getInitializer()->isNullValue();
-    assert((!init_zero || !needs_relocs) &&
-           "zero-initialized sections must not have relocations");
+  using tpde::SectionKind;
+  SectionKind kind;
+  if (llvm::isa<llvm::Function>(go)) {
+    kind = SectionKind::Text;
+  } else {
+    auto gv = llvm::cast<llvm::GlobalVariable>(go);
+    bool init_zero = gv->getInitializer()->isNullValue();
+    bool read_only = gv->isConstant();
+    if (gv->isThreadLocal()) {
+      kind = init_zero ? SectionKind::ThreadBSS : SectionKind::ThreadData;
+    } else if (!read_only && init_zero) {
+      assert(!needs_relocs && "BSS section must not have relocations");
+      kind = SectionKind::BSS;
+    } else if (read_only) {
+      kind = needs_relocs ? SectionKind::DataRelRO : SectionKind::ReadOnly;
+    } else {
+      kind = SectionKind::Data;
+    }
   }
 
+  bool retain = used_globals.contains(go);
   llvm::StringRef sec_name = go->getSection();
   const llvm::Comdat *comdat = go->getComdat();
 
   // If the section name is empty, use the default section.
   if (!retain && !comdat && sec_name.empty()) [[likely]] {
-    if (is_func) {
-      return this->assembler.get_text_section();
-    }
-
-    if (tls) {
-      return init_zero ? this->assembler.get_tbss_section()
-                       : this->assembler.get_tdata_section();
-    }
-
-    if (!read_only && init_zero) {
-      return this->assembler.get_bss_section();
-    }
-    return this->assembler.get_data_section(read_only, needs_relocs);
+    return this->assembler.get_default_section(kind);
   }
 
+  // Group section must be created before the group contents.
   SecRef group_sec = get_group_section(go, sym);
 
-  llvm::StringRef def_name;
-  unsigned type = SHT_PROGBITS;
-  unsigned flags = SHF_ALLOC;
-  if (is_func) {
-    def_name = ".text";
-    flags |= SHF_EXECINSTR;
-  } else if (tls) {
-    def_name = init_zero ? llvm::StringRef(".tbss") : llvm::StringRef(".tdata");
-    type = init_zero ? SHT_NOBITS : SHT_PROGBITS;
-    flags |= SHF_WRITE | SHF_TLS;
-  } else if (!read_only && init_zero) {
-    def_name = ".bss";
-    type = SHT_NOBITS;
-    flags |= SHF_WRITE;
-  } else if (!read_only) {
-    def_name = ".data";
-    flags |= SHF_WRITE;
-  } else if (needs_relocs) {
-    def_name = ".data.rel.ro";
-    flags |= SHF_WRITE;
-  } else {
-    def_name = ".rodata";
+  // TODO: is it *required* that we merge sections here? For now, don't.
+  SecRef sec = this->assembler.create_section(kind);
+  if (!sec_name.empty()) {
+    this->assembler.rename_section(sec, sec_name);
+  }
+
+  if (group_sec.valid()) {
+    // TODO: ELF only
+    this->assembler.add_to_group(group_sec, sec);
   }
 
   if (retain) {
-    flags |= SHF_GNU_RETAIN;
+    // TODO: ELF only
+    this->assembler.get_section(sec).flags |= tpde::elf::SHF_GNU_RETAIN;
   }
 
-  if (sec_name.empty()) {
-    sec_name = def_name; // Use default prefix
-  }
-
-  llvm::SmallString<512> name_buf;
-  if (comdat) {
-    llvm::StringRef go_name = go->getName();
-    name_buf.reserve(sec_name.size() + 1 + go_name.size());
-    name_buf.append(sec_name);
-    name_buf.push_back('.');
-    // TODO: apply LLVM's name mangling.
-    // TODO: do we need to include the platform prefix (_ on Darwin) here?
-    name_buf.append(go_name);
-    sec_name = name_buf.str();
-  }
-
-  // TODO: is it *required* that we merge sections here? For now, don't.
-
-  return this->assembler.create_section(
-      sec_name, type, flags, needs_relocs, group_sec);
+  return sec;
 }
 
 template <typename Adaptor, typename Derived, typename Config>
@@ -870,15 +856,18 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::
   global_syms.reserve(2 * llvm_mod.global_size());
 
   auto declare_global = [&, this](const llvm::GlobalValue &gv) {
-    // TODO: name mangling
-    if (!gv.hasName()) {
-      TPDE_LOG_ERR("unnamed globals are not implemented");
-      return false;
+    llvm::GlobalValue::LinkageTypes linkage = gv.getLinkage();
+    if (!gv.hasName() && !gv.hasLocalLinkage()) [[unlikely]] {
+      // This is unspecified by LangRef at least up to LLVM 21. LLVM mangles
+      // the name into "__unnamed_<number>".
+      TPDE_LOG_WARN("unnamed global converted to internal linkage");
+      linkage = llvm::GlobalValue::InternalLinkage;
     }
 
+    // TODO: name mangling
     llvm::StringRef name = gv.getName();
 
-    if (gv.hasAppendingLinkage()) [[unlikely]] {
+    if (linkage == llvm::GlobalValue::AppendingLinkage) [[unlikely]] {
       if (name == "llvm.used") {
         auto init = llvm::cast<llvm::GlobalVariable>(gv).getInitializer();
         if (auto used_array = llvm::cast_or_null<llvm::ConstantArray>(init)) {
@@ -899,7 +888,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::
       return true;
     }
 
-    auto binding = convert_linkage(&gv);
+    auto binding = convert_linkage(linkage);
     SymRef sym;
     if (gv.isThreadLocal()) {
       sym = this->assembler.sym_predef_tls(name, binding);
@@ -1216,8 +1205,9 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::global_init_to_data(
     return global_init_to_data(reloc_base, data, relocs, layout, fc, off);
   }
 
-  TPDE_LOG_ERR("Encountered unknown constant in global initializer");
-  llvm::errs() << *constant << "\n";
+  std::string const_str;
+  llvm::raw_string_ostream(const_str) << *constant;
+  TPDE_LOG_ERR("unhandled constant in global initializer: {}", const_str);
   return false;
 }
 
@@ -1291,7 +1281,8 @@ typename LLVMCompilerBase<Adaptor, Derived, Config>::SymRef
   default: TPDE_UNREACHABLE("invalid libfunc");
   }
 
-  sym = this->assembler.sym_add_undef(name, Assembler::SymBinding::GLOBAL);
+  sym =
+      this->assembler.sym_add_undef(name, tpde::Assembler::SymBinding::GLOBAL);
   return sym;
 }
 
@@ -1316,8 +1307,8 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile(
     llvm::GlobalAlias *ga = &*it;
     auto *alias_target = llvm::dyn_cast<llvm::GlobalValue>(ga->getAliasee());
     if (alias_target == nullptr) {
-      assert(0);
-      continue;
+      TPDE_LOG_ERR("alias with non-GlobalValue aliasee is unsupported");
+      return false;
     }
     auto dst_sym = global_sym(ga);
     auto from_sym = global_sym(alias_target);
@@ -1437,7 +1428,8 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_ret(
   if (inst->getNumOperands() != 0) {
     llvm::Value *retval = inst->getOperand(0);
     bool handled = false;
-    if (auto ret_ty = retval->getType(); ret_ty->isIntegerTy()) {
+    llvm::Type *ret_ty = retval->getType();
+    if (ret_ty->isIntegerTy()) {
       if (unsigned width = ret_ty->getIntegerBitWidth(); width % 32 != 0) {
         assert(width < 64 && "non-i128 multi-word int should be illegal");
         unsigned dst_width = width < 32 ? 32 : 64;
@@ -1452,6 +1444,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_ret(
           rb.add(std::move(vpr).into_extended(true, width, dst_width), {});
           handled = true;
         }
+      }
+    } else if (ret_ty->isX86_FP80Ty()) {
+      if constexpr (requires { &Derived::fp80_push; }) {
+        derived()->fp80_push(this->val_ref(retval).part(0));
+        handled = true;
+      } else {
+        return false;
       }
     }
 
@@ -1624,6 +1623,12 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_load_generic(
     derived()->encode_loadv128(std::move(ptr_op),
                                this->result_ref(load).part(0));
     break;
+  case f80:
+    if constexpr (requires { &Derived::fp80_load; }) {
+      derived()->fp80_load(std::move(ptr_op), this->result_ref(load).part(0));
+      break;
+    }
+    return false;
   case complex: {
     auto ty_idx = this->adaptor->val_info(load).complex_part_tys_idx;
     const LLVMComplexPart *part_descs =
@@ -1680,7 +1685,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_load_generic(
       case f128:
         derived()->encode_loadv128(std::move(part_addr), res.part(i));
         break;
-      default: assert(0); return false;
+      case f80:
+        if constexpr (requires { &Derived::fp80_load; }) {
+          derived()->fp80_load(std::move(part_addr), res.part(i));
+          break;
+        }
+        return false;
+      default: return false;
       }
 
       off += part_descs[i].part.size + part_descs[i].part.pad_after;
@@ -1807,7 +1818,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_store_generic(
     case 64:
       derived()->encode_storei64(std::move(ptr_op), op_ref.part(0));
       break;
-    default: assert(0); return false;
+    default: return false;
     }
     break;
   }
@@ -1846,6 +1857,12 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_store_generic(
   case f128:
     derived()->encode_storev128(std::move(ptr_op), op_ref.part(0));
     break;
+  case f80:
+    if constexpr (requires { &Derived::fp80_store; }) {
+      derived()->fp80_store(std::move(ptr_op), op_ref.part(0));
+      break;
+    }
+    return false;
   case complex: {
     const LLVMComplexPart *part_descs =
         &this->adaptor->complex_part_types[ty_idx + 1];
@@ -1906,7 +1923,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_store_generic(
       case f128:
         derived()->encode_storev128(std::move(part_addr), std::move(part_ref));
         break;
-      default: assert(0); return false;
+      case f80:
+        if constexpr (requires { &Derived::fp80_store; }) {
+          derived()->fp80_store(std::move(part_addr), std::move(part_ref));
+          break;
+        }
+        return false;
+      default: return false;
       }
 
       off += part_descs[i].part.size + part_descs[i].part.pad_after;
@@ -2089,7 +2112,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_int_binary_op(
       bool (Derived::*)(GenericValuePart &&, GenericValuePart &&, ValuePart &);
   // fns[op.index()][idx]
   static constexpr auto fns = []() constexpr {
-    std::array<EncodeFnTy[10], IntBinaryOp::num_ops> res{};
+    std::array<EncodeFnTy[12], IntBinaryOp::num_ops> res{};
     auto entry = [&res](IntBinaryOp op) { return res[op.index()]; };
 
     // TODO: more consistent naming of encode functions
@@ -2123,6 +2146,30 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_int_binary_op(
 #undef FN_ENTRY_VEC
 #undef FN_ENTRY_INT
 
+    // i1 is special.
+    entry(IntBinaryOp::add)[10] = &Derived::encode_lxori32;
+    entry(IntBinaryOp::add)[11] = &Derived::encode_lxori64;
+    entry(IntBinaryOp::sub)[10] = &Derived::encode_lxori32;
+    entry(IntBinaryOp::sub)[11] = &Derived::encode_lxori64;
+    entry(IntBinaryOp::mul)[10] = &Derived::encode_landi32;
+    entry(IntBinaryOp::mul)[11] = &Derived::encode_landi64;
+    // udiv: x/1 = x; x/0 = UB => and is equivalent
+    entry(IntBinaryOp::udiv)[10] = &Derived::encode_landi32;
+    entry(IntBinaryOp::udiv)[11] = &Derived::encode_landi64;
+    // sdiv: 0/-1 = 0; -1/-1 = UB; x/0 = UB => and is equivalent
+    entry(IntBinaryOp::sdiv)[10] = &Derived::encode_landi32;
+    entry(IntBinaryOp::sdiv)[11] = &Derived::encode_landi64;
+    // urem/srem are always zero, but we have no encode function to return zero.
+    // For now, keep them unassigned.
+    entry(IntBinaryOp::land)[10] = &Derived::encode_landi32;
+    entry(IntBinaryOp::land)[11] = &Derived::encode_landi64;
+    entry(IntBinaryOp::lxor)[10] = &Derived::encode_lxori32;
+    entry(IntBinaryOp::lxor)[11] = &Derived::encode_lxori64;
+    entry(IntBinaryOp::lor)[10] = &Derived::encode_lori32;
+    entry(IntBinaryOp::lor)[11] = &Derived::encode_lori64;
+    // shl/lshr/ashr are always poison, so we could use any operation... for
+    // now, keep them unassigned.
+
     return res;
   }();
   auto get_encode_fn =
@@ -2140,6 +2187,10 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_int_binary_op(
       res[unsigned(LLVMBasicValType::v8i16)] = 7;
       res[unsigned(LLVMBasicValType::v4i32)] = 8;
       res[unsigned(LLVMBasicValType::v2i64)] = 9;
+      res[unsigned(LLVMBasicValType::v8i1)] = 10;
+      res[unsigned(LLVMBasicValType::v16i1)] = 10;
+      res[unsigned(LLVMBasicValType::v32i1)] = 10;
+      res[unsigned(LLVMBasicValType::v64i1)] = 11;
       return res;
     }();
     unsigned ty_idx = bvt_lut[unsigned(bvt)];
@@ -2226,6 +2277,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_binary_op(
     const llvm::Instruction *inst, const ValInfo &val_info, u64 op) noexcept {
   auto lhs = this->val_ref(inst->getOperand(0));
   auto rhs = this->val_ref(inst->getOperand(1));
+  ValueRef res = this->result_ref(inst);
 
   if (val_info.type == LLVMBasicValType::f128) {
     LibFunc lf;
@@ -2241,8 +2293,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_binary_op(
     cb->add_arg(lhs.part(0), tpde::CCAssignment{});
     cb->add_arg(rhs.part(0), tpde::CCAssignment{});
     cb->call(get_libfunc_sym(lf));
-    auto res_vr = this->result_ref(inst);
-    cb->add_ret(res_vr);
+    cb->add_ret(res);
     return true;
   }
 
@@ -2258,8 +2309,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_binary_op(
     cb->add_arg(lhs.part(0), tpde::CCAssignment{});
     cb->add_arg(rhs.part(0), tpde::CCAssignment{});
     cb->call(get_libfunc_sym(lf));
-    auto res_vr = this->result_ref(inst);
-    cb->add_ret(res_vr);
+    cb->add_ret(res);
     return true;
   }
 
@@ -2314,26 +2364,51 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_binary_op(
     default: TPDE_UNREACHABLE("invalid FloatBinaryOp");
     }
     break;
+  case f80:
+    if constexpr (requires { &Derived::fp80_load; }) {
+      switch (op) {
+      case FloatBinaryOp::add:
+        derived()->fp80_add(lhs.part(0), rhs.part(0), res.part(0));
+        return true;
+      case FloatBinaryOp::sub:
+        derived()->fp80_sub(lhs.part(0), rhs.part(0), res.part(0));
+        return true;
+      case FloatBinaryOp::mul:
+        derived()->fp80_mul(lhs.part(0), rhs.part(0), res.part(0));
+        return true;
+      case FloatBinaryOp::div:
+        derived()->fp80_div(lhs.part(0), rhs.part(0), res.part(0));
+        return true;
+      default: TPDE_UNREACHABLE("invalid FloatBinaryOp");
+      }
+    } else {
+      return false;
+    }
   default: return false;
   }
 
-  ValueRef res = this->result_ref(inst);
   return (derived()->*encode_fn)(lhs.part(0), rhs.part(0), res.part(0));
 }
 
 template <typename Adaptor, typename Derived, typename Config>
 bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_fneg(
     const llvm::Instruction *inst, const ValInfo &val_info, u64) noexcept {
-  auto src = this->val_ref(inst->getOperand(0));
-  auto [res_vr, res_ref] = this->result_ref_single(inst);
+  ValueRef src = this->val_ref(inst->getOperand(0));
+  ValueRef res = this->result_ref(inst);
   switch (val_info.type) {
     using enum LLVMBasicValType;
-  case f32: derived()->encode_fnegf32(src.part(0), res_ref); break;
-  case f64: derived()->encode_fnegf64(src.part(0), res_ref); break;
-  case f128: derived()->encode_fnegf128(src.part(0), res_ref); break;
-  case v2f32: derived()->encode_fnegv2f32(src.part(0), res_ref); break;
-  case v4f32: derived()->encode_fnegv4f32(src.part(0), res_ref); break;
-  case v2f64: derived()->encode_fnegv2f64(src.part(0), res_ref); break;
+  case f32: derived()->encode_fnegf32(src.part(0), res.part(0)); break;
+  case f64: derived()->encode_fnegf64(src.part(0), res.part(0)); break;
+  case f128: derived()->encode_fnegf128(src.part(0), res.part(0)); break;
+  case v2f32: derived()->encode_fnegv2f32(src.part(0), res.part(0)); break;
+  case v4f32: derived()->encode_fnegv4f32(src.part(0), res.part(0)); break;
+  case v2f64: derived()->encode_fnegv2f64(src.part(0), res.part(0)); break;
+  case f80:
+    if constexpr (requires { &Derived::fp80_neg; }) {
+      derived()->fp80_neg(src.part(0), res.part(0));
+      return true;
+    }
+    return false;
   default: return false;
   }
   return true;
@@ -2363,6 +2438,19 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_ext_trunc(
     sym = get_libfunc_sym(LibFunc::extendsftf2);
   } else if (src_ty->isDoubleTy() && dst_ty->isFP128Ty()) {
     sym = get_libfunc_sym(LibFunc::extenddftf2);
+  } else if constexpr (requires { &Derived::fp80_load; }) {
+    auto src_ref = this->val_ref(src_val);
+    if (src_ty->isFloatTy() && dst_ty->isX86_FP80Ty()) {
+      derived()->fp80_ext_float(src_ref.part(0), res_vr.part(0));
+    } else if (src_ty->isDoubleTy() && dst_ty->isX86_FP80Ty()) {
+      derived()->fp80_ext_double(src_ref.part(0), res_vr.part(0));
+    } else if (src_ty->isX86_FP80Ty() && dst_ty->isFloatTy()) {
+      derived()->fp80_trunc_float(src_ref.part(0), res_vr.part(0));
+    } else if (src_ty->isX86_FP80Ty() && dst_ty->isDoubleTy()) {
+      derived()->fp80_trunc_double(src_ref.part(0), res_vr.part(0));
+    } else {
+      return false;
+    }
   } else {
     return false;
   }
@@ -2392,7 +2480,11 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_to_int(
     return false;
   }
 
-  if (src_ty->isFP128Ty()) {
+  unsigned ty_idx;
+  switch (src_ty->getTypeID()) {
+  case llvm::Type::FloatTyID: ty_idx = 0; break;
+  case llvm::Type::DoubleTyID: ty_idx = 1; break;
+  case llvm::Type::FP128TyID: {
     if (saturate) {
       return false;
     }
@@ -2404,12 +2496,19 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_to_int(
     derived()->create_helper_call({&src_val, 1}, &res_vr, sym);
     return true;
   }
-
-  if (!src_ty->isFloatTy() && !src_ty->isDoubleTy()) {
+  case llvm::Type::X86_FP80TyID:
+    if (saturate) {
+      return false;
+    }
+    if constexpr (requires { &Derived::fp80_to_int; }) {
+      ValueRef src = this->val_ref(src_val);
+      ValueRef res = this->result_ref(inst);
+      derived()->fp80_to_int(sign, bit_width > 32, src.part(0), res.part(0));
+      return true;
+    }
     return false;
+  default: return false;
   }
-
-  const auto src_double = src_ty->isDoubleTy();
 
   using EncodeFnTy = bool (Derived::*)(GenericValuePart &&, ValuePart &&);
   static constexpr auto fns = []() {
@@ -2433,7 +2532,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_to_int(
     fns[1][1][1][1] = &Derived::encode_f64toi64_sat;
     return fns;
   }();
-  EncodeFnTy fn = fns[src_double][bit_width > 32][sign][saturate];
+  EncodeFnTy fn = fns[ty_idx][bit_width > 32][sign][saturate];
 
   if (saturate && bit_width % 32 != 0) {
     // TODO: clamp result to smaller integer bounds
@@ -2447,7 +2546,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_float_to_int(
 
 template <typename Adaptor, typename Derived, typename Config>
 bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_int_to_float(
-    const llvm::Instruction *inst, const ValInfo &, u64 sign) noexcept {
+    const llvm::Instruction *inst, const ValInfo &val_info, u64 sign) noexcept {
   const llvm::Value *src_val = inst->getOperand(0);
   auto *dst_ty = inst->getType();
   if (dst_ty->isVectorTy()) {
@@ -2477,50 +2576,44 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_int_to_float(
     return true;
   }
 
-  if (!dst_ty->isFloatTy() && !dst_ty->isDoubleTy()) {
-    return false;
-  }
-
-  const auto dst_double = dst_ty->isDoubleTy();
-
   ValueRef src_ref = this->val_ref(src_val);
   ValuePartRef src_op = src_ref.part(0);
-  auto [res_vr, res_ref] = this->result_ref_single(inst);
+  ValueRef res = this->result_ref(inst);
 
   if (bit_width != 32 && bit_width != 64) {
     unsigned ext = tpde::util::align_up(bit_width, 32);
     src_op = std::move(src_op).into_extended(sign, bit_width, ext);
   }
 
-  if (sign) {
-    if (bit_width > 32) {
-      if (dst_double) {
-        derived()->encode_i64tof64(std::move(src_op), res_ref);
-      } else {
-        derived()->encode_i64tof32(std::move(src_op), res_ref);
-      }
-    } else {
-      if (dst_double) {
-        derived()->encode_i32tof64(std::move(src_op), res_ref);
-      } else {
-        derived()->encode_i32tof32(std::move(src_op), res_ref);
-      }
+  unsigned ty_idx;
+  switch (val_info.type) {
+  case LLVMBasicValType::f32: ty_idx = 0; break;
+  case LLVMBasicValType::f64: ty_idx = 1; break;
+  case LLVMBasicValType::f80:
+    if constexpr (requires { &Derived::fp80_from_int; }) {
+      derived()->fp80_from_int(
+          sign, bit_width > 32, std::move(src_op), res.part(0));
+      return true;
     }
-  } else {
-    if (bit_width > 32) {
-      if (dst_double) {
-        derived()->encode_u64tof64(std::move(src_op), res_ref);
-      } else {
-        derived()->encode_u64tof32(std::move(src_op), res_ref);
-      }
-    } else {
-      if (dst_double) {
-        derived()->encode_u32tof64(std::move(src_op), res_ref);
-      } else {
-        derived()->encode_u32tof32(std::move(src_op), res_ref);
-      }
-    }
+    return false;
+  default: return false;
   }
+
+  using EncodeFnTy = bool (Derived::*)(GenericValuePart &&, ValuePart &&);
+  static constexpr auto encode_fns = []() consteval {
+    std::array<EncodeFnTy[2][2], 2> res;
+    res[0][0][0] = &Derived::encode_i32tof32;
+    res[0][0][1] = &Derived::encode_i32tof64;
+    res[0][1][0] = &Derived::encode_i64tof32;
+    res[0][1][1] = &Derived::encode_i64tof64;
+    res[1][0][0] = &Derived::encode_u32tof32;
+    res[1][0][1] = &Derived::encode_u32tof64;
+    res[1][1][0] = &Derived::encode_u64tof32;
+    res[1][1][1] = &Derived::encode_u64tof64;
+    return res;
+  }();
+  EncodeFnTy fn = encode_fns[!sign][bit_width > 32][ty_idx];
+  (derived()->*fn)(std::move(src_op), res.part(0));
   return true;
 }
 
@@ -2754,6 +2847,14 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_insert_value(
 
   ValueRef agg_ref = this->val_ref(agg);
   ValueRef ins_ref = this->val_ref(ins);
+  if (agg_ref.is_owned()) {
+    ValueRef res_ref = this->result_ref_alias(insert, std::move(agg_ref));
+    for (unsigned i = first_part; i <= last_part; i++) {
+      res_ref.part(i).set_value(ins_ref.part(i - first_part));
+    }
+    return true;
+  }
+
   ValueRef res_ref = this->result_ref(insert);
   for (unsigned i = 0; i < part_count; i++) {
     ValuePartRef val_ref{this};
@@ -2825,6 +2926,21 @@ void LLVMCompilerBase<Adaptor, Derived, Config>::insert_element(
     GenericValuePart &&el) noexcept {
   tpde::ValueAssignment *va = vec_vr.assignment();
   u32 elem_sz = this->adaptor->basic_ty_part_size(ty);
+
+  if (ty == LLVMBasicValType::i1) {
+    assert(vec_vr.assignment()->part_count == 1);
+    assert(idx < 64);
+    ValuePartRef vec_part = vec_vr.part_unowned(0);
+    if (!vec_part.assignment().stack_valid() &&
+        !vec_part.assignment().register_valid()) {
+      AsmReg dst_reg = vec_part.alloc_reg(); // Uninitialized
+      derived()->generate_raw_bfiz(dst_reg, derived()->gval_as_reg(el), idx, 1);
+    } else {
+      AsmReg dst_reg = vec_part.load_to_reg();
+      derived()->generate_raw_bfi(dst_reg, derived()->gval_as_reg(el), idx, 1);
+    }
+    return;
+  }
 
   // TODO: optimize for scalarized vectors, reuse el as new value part.
 
@@ -2923,7 +3039,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_extract_element(
   }
   assert(expr.scale == 0);
   expr.scale = this->adaptor->basic_ty_part_size(bvt);
-  expr.index = std::move(idx_scratch).into_scratch(this);
+  expr.index = std::move(idx_scratch).into_scratch();
 
   // Third, do the load.
   switch (bvt) {
@@ -2947,15 +3063,26 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_insert_element(
 
   auto *vec_ty = llvm::cast<llvm::FixedVectorType>(inst->getType());
   unsigned nelem = vec_ty->getNumElements();
-  assert(index->getType()->getIntegerBitWidth() >= 8);
+  if (index->getType()->getIntegerBitWidth() < 8) {
+    return false;
+  }
 
   auto ins = inst->getOperand(1);
   auto [val_ref, val] = this->val_ref_single(ins);
-  ValueRef res_vr = this->result_ref(inst);
+  ValueRef res_vr{derived()};
 
   if (ins->getType()->isIntegerTy(1)) {
+    res_vr = this->result_ref(inst);
     assert(res_vr.assignment()->part_count == 1);
     ValueRef src_vr = this->val_ref(inst->getOperand(0));
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
+      res_vr.part(0).set_value(src_vr.part(0));
+      unsigned cidx = ci->getZExtValue() < nelem ? ci->getZExtValue() : 0;
+      LLVMBasicValType bvt = LLVMBasicValType::i1;
+      derived()->insert_element(res_vr, cidx, bvt, std::move(val));
+      return true;
+    }
+
     derived()->encode_insert_vi1(src_vr.part(0),
                                  this->val_ref(index).part(0),
                                  std::move(val),
@@ -2973,9 +3100,14 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_insert_element(
   // indices, because the value reference must always be initialized.
   {
     ValueRef src_vr = this->val_ref(inst->getOperand(0));
-    for (u32 i = 0; i < res_vr.assignment()->part_count; ++i) {
-      // TODO: skip overwritten part in scalarized case.
-      res_vr.part(i).set_value(src_vr.part(i));
+    if (src_vr.is_owned()) {
+      res_vr = this->result_ref_alias(inst, std::move(src_vr));
+    } else {
+      res_vr = this->result_ref(inst);
+      for (u32 i = 0; i < res_vr.assignment()->part_count; ++i) {
+        // TODO: skip overwritten part in scalarized case.
+        res_vr.part(i).set_value(src_vr.part(i));
+      }
     }
   }
 
@@ -3011,7 +3143,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_insert_element(
   }
   assert(expr.scale == 0);
   expr.scale = val.part_size();
-  expr.index = std::move(idx_scratch).into_scratch(this);
+  expr.index = std::move(idx_scratch).into_scratch();
 
   // Third, do the store.
   switch (bvt) {
@@ -3121,7 +3253,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_icmp_vector(
   static constexpr auto fns = []() constexpr {
     constexpr unsigned NumPreds = llvm::ICmpInst::LAST_ICMP_PREDICATE -
                                   llvm::ICmpInst::FIRST_ICMP_PREDICATE + 1;
-    std::array<EncodeFnTy[7][3], NumPreds> res{};
+    std::array<EncodeFnTy[9][3], NumPreds> res{};
     auto entry = [&res](llvm::ICmpInst::Predicate pred) {
       return res[pred - llvm::ICmpInst::FIRST_ICMP_PREDICATE];
     };
@@ -3148,7 +3280,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_icmp_vector(
   entry(predval)[5][2] = &Derived::encode_icmpset_##predname##v4##sign##32;    \
   entry(predval)[6][0] = &Derived::encode_icmp_##predname##v2##sign##64;       \
   entry(predval)[6][1] = &Derived::encode_icmpmask_##predname##v2##sign##64;   \
-  entry(predval)[6][2] = &Derived::encode_icmpset_##predname##v2##sign##64;
+  entry(predval)[6][2] = &Derived::encode_icmpset_##predname##v2##sign##64;    \
+  entry(predval)[7][0] = &Derived::encode_icmp_##predname##i32;                \
+  entry(predval)[7][1] = &Derived::encode_icmpmask_##predname##i32;            \
+  entry(predval)[7][2] = &Derived::encode_icmpset_##predname##i32;             \
+  entry(predval)[8][0] = &Derived::encode_icmp_##predname##i64;                \
+  entry(predval)[8][1] = &Derived::encode_icmpmask_##predname##i64;            \
+  entry(predval)[8][2] = &Derived::encode_icmpset_##predname##i64;
 
     FN_ENTRY(llvm::ICmpInst::ICMP_EQ, eq, u)
     FN_ENTRY(llvm::ICmpInst::ICMP_NE, ne, u)
@@ -3169,15 +3307,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_icmp_vector(
   llvm::Value *lhs = icmp->getOperand(0);
   llvm::Value *rhs = icmp->getOperand(1);
 
-  const llvm::Instruction *fuse_ext = nullptr;
-  if (icmp->hasNUses(1) && *icmp->user_begin() == icmp->getNextNode()) {
-    auto *fuse_inst = icmp->getNextNode();
-    if (llvm::isa<llvm::SExtInst, llvm::ZExtInst>(fuse_inst) &&
-        fuse_inst->getType() == lhs->getType()) {
-      fuse_ext = fuse_inst;
-      this->adaptor->inst_set_fused(fuse_ext, true);
-    }
-  }
+  u32 pred_idx = icmp->getPredicate() - llvm::ICmpInst::FIRST_ICMP_PREDICATE;
 
   auto [ty, _] = this->adaptor->lower_type(lhs);
   unsigned ty_idx;
@@ -3189,16 +3319,56 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_icmp_vector(
   case LLVMBasicValType::v8i16: ty_idx = 4; break;
   case LLVMBasicValType::v4i32: ty_idx = 5; break;
   case LLVMBasicValType::v2i64: ty_idx = 6; break;
+  case LLVMBasicValType::complex: {
+    auto *vec_ty = llvm::cast<llvm::FixedVectorType>(lhs->getType());
+    unsigned nelem = vec_ty->getNumElements();
+    auto [elem_ty, _] = this->adaptor->lower_type(vec_ty->getElementType());
+    switch (elem_ty) {
+    case LLVMBasicValType::i8:
+    case LLVMBasicValType::i16:
+      // TODO: support i1/i8/i16 vector icmp, needs element extension.
+      return false;
+    case LLVMBasicValType::i32: ty_idx = 7; break;
+    case LLVMBasicValType::i64:
+    case LLVMBasicValType::ptr: ty_idx = 8; break;
+    default: TPDE_UNREACHABLE("unexpected legal icmp vector type");
+    }
+
+    EncodeFnTy fn = fns[pred_idx][ty_idx][0];
+
+    ValueRef lhs_vr = this->val_ref(lhs);
+    ValueRef rhs_vr = this->val_ref(rhs);
+    ValueRef lhs_vr_disowned = lhs_vr.disowned();
+    ValueRef rhs_vr_disowned = rhs_vr.disowned();
+    ValueRef res = this->result_ref(inst);
+
+    ValuePartRef tmp{this, Config::GP_BANK};
+    ValuePartRef e_lhs{this, LLVMAdaptor::basic_ty_part_bank(elem_ty)};
+    ValuePartRef e_rhs{this, LLVMAdaptor::basic_ty_part_bank(elem_ty)};
+    for (unsigned i = 0; i != nelem; i++) {
+      derived()->extract_element(lhs_vr_disowned, i, elem_ty, e_lhs);
+      derived()->extract_element(rhs_vr_disowned, i, elem_ty, e_rhs);
+      (derived()->*fn)(std::move(e_lhs), std::move(e_rhs), std::move(tmp));
+      derived()->insert_element(res, i, LLVMBasicValType::i1, std::move(tmp));
+    }
+    return true;
+  }
   default: return false;
   }
 
-  u32 pred_idx = icmp->getPredicate() - llvm::ICmpInst::FIRST_ICMP_PREDICATE;
-  u32 res_type_idx = fuse_ext ? llvm::isa<llvm::ZExtInst>(fuse_ext) ? 2 : 1 : 0;
-  EncodeFnTy encode_fn = fns[pred_idx][ty_idx][res_type_idx];
-  if (!encode_fn) {
-    return false;
+  const llvm::Instruction *fuse_ext = nullptr;
+  u32 res_type_idx = 0;
+  if (icmp->hasNUses(1) && *icmp->user_begin() == icmp->getNextNode()) {
+    auto *fuse_inst = icmp->getNextNode();
+    if (llvm::isa<llvm::SExtInst, llvm::ZExtInst>(fuse_inst) &&
+        fuse_inst->getType() == lhs->getType()) {
+      fuse_ext = fuse_inst;
+      res_type_idx = llvm::isa<llvm::ZExtInst>(fuse_ext) ? 2 : 1;
+      this->adaptor->inst_set_fused(fuse_ext, true);
+    }
   }
 
+  EncodeFnTy encode_fn = fns[pred_idx][ty_idx][res_type_idx];
   auto lhs_vr = this->val_ref(lhs);
   auto rhs_vr = this->val_ref(rhs);
   auto res = this->result_ref(fuse_ext ? fuse_ext : inst);
@@ -3571,6 +3741,19 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_call(
         arg.ext_bits = op->getType()->getIntegerBitWidth();
       }
       break;
+    case LLVMBasicValType::i128: arg.byval_align = 16; break;
+    case LLVMBasicValType::f80: {
+      auto [vr, vpr] = this->val_ref_single(op);
+      tpde::CCAssignment cca{
+          .align = 16, .bank = tpde::RegBank(-2), .size = 16};
+      cb->add_arg(std::move(vpr), cca);
+      continue;
+    }
+    case LLVMBasicValType::complex:
+      if (derived()->arg_allow_split_reg_stack_passing(op)) {
+        arg.flag = CallArg::Flag::allow_split;
+      }
+      break;
     default: break;
     }
     assert(!call->paramHasAttr(i, llvm::Attribute::AttrKind::InAlloca));
@@ -3590,7 +3773,16 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_call(
 
   if (!call->getType()->isVoidTy()) {
     ValueRef res = this->result_ref(call);
-    cb->add_ret(res);
+    if (call->getType()->isX86_FP80Ty()) [[unlikely]] {
+      if constexpr (requires { &Derived::fp80_pop; }) {
+        ValuePartRef res_vpr = res.part(0);
+        derived()->fp80_pop(res_vpr);
+      } else {
+        return false;
+      }
+    } else {
+      cb->add_ret(res);
+    }
   }
 
   return true;
@@ -3639,6 +3831,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_select(
     derived()->encode_select_f64(
         std::move(cond), lhs.part(0), rhs.part(0), res.part(0));
     break;
+  case f80: // x86_fp80 is mapped to XMM register, so we can reuse the logic.
   case f128:
   case v16i8:
   case v8i16:
@@ -3678,7 +3871,6 @@ template <typename Adaptor, typename Derived, typename Config>
 bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_alloca(
     const llvm::Instruction *inst, const ValInfo &, u64) noexcept {
   const auto *alloca = llvm::cast<llvm::AllocaInst>(inst);
-  assert(this->adaptor->cur_has_dynamic_alloca());
 
   auto [res_vr, res_ref] = this->result_ref_single(alloca);
 
@@ -3724,13 +3916,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_gep(
   // index. GEP components are sign-extended, but we must use an unsigned
   // integer here to correctly handle overflows.
   u64 displacement = 0;
+  // If set, the base is actually a stack variable reference and expr.base is
+  // still uninitialized.
+  bool base_is_stack_var = false;
 
   auto [ptr_ref, base] = this->val_ref_single(gep->getPointerOperand());
   if (base.has_assignment() && base.assignment().is_stack_variable()) {
-    addr = derived()->create_addr_for_alloca(base.assignment());
-    assert(addr.is_expr());
-    displacement = expr.disp;
-    expr.disp = 0;
+    base_is_stack_var = true;
   } else {
     expr.base = base.load_to_reg();
     if (base.can_salvage()) {
@@ -3758,7 +3950,13 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_gep(
         if (first_idx) {
           // array index
           if (i64 idx_val = Const->getSExtValue(); idx_val != 0) {
-            off_disp = data_layout.getTypeAllocSize(cur_ty) * idx_val;
+            i64 alloc_size = 1;
+            // LLVM nowadays canonicalizes getelementptr to i8 as a preparation
+            // for a possible ptradd migration. Add a fast path for this.
+            if (!cur_ty->isIntegerTy() || cur_ty->getIntegerBitWidth() != 8) {
+              alloc_size = data_layout.getTypeAllocSize(cur_ty);
+            }
+            off_disp = alloc_size * idx_val;
           }
         } else if (auto *struct_ty = llvm::dyn_cast<llvm::StructType>(cur_ty)) {
           u64 field_idx = Const->getZExtValue();
@@ -3780,6 +3978,14 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_gep(
         // index == 0) or an array traversal
         if (!first_idx) {
           cur_ty = cur_ty->getArrayElementType();
+        }
+
+        if (base_is_stack_var) {
+          addr = derived()->create_addr_for_alloca(base.assignment());
+          assert(addr.is_expr());
+          displacement += expr.disp;
+          expr.disp = 0;
+          base_is_stack_var = false;
         }
 
         if (expr.scale) {
@@ -3835,7 +4041,19 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_gep(
     gep = next_gep;
   } while (true);
 
-  expr.disp = displacement;
+  if (base_is_stack_var) {
+    if (!next_val) {
+      // Create a new stack variable reference to avoid materializing this
+      // simple addition.
+      (void)this->result_ref_stack_slot(gep, base.assignment(), displacement);
+      return true;
+    }
+
+    addr = derived()->create_addr_for_alloca(base.assignment());
+    expr.disp += displacement;
+  } else {
+    expr.disp = displacement;
+  }
 
   if (auto *store = llvm::dyn_cast_if_present<llvm::StoreInst>(next_val);
       store && store->getPointerOperand() == gep) {
@@ -3938,7 +4156,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_fcmp(
       // ONE __unordtf2 == 0 && __eqtf2 != 0
       // UEQ __unordtf2 != 0 || __eqtf2 == 0
       return false;
-    default: assert(0 && "unexpected fcmp predicate");
+    default: TPDE_UNREACHABLE("unexpected fcmp predicate");
     }
 
     IRValueRef lhs = cmp->getOperand(0);
@@ -3950,6 +4168,16 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_fcmp(
     derived()->compile_i32_cmp_zero(res_vr.part(0).load_to_reg(), cmp_pred);
 
     return true;
+  }
+
+  ValueRef lhs = this->val_ref(cmp->getOperand(0));
+  ValueRef rhs = this->val_ref(cmp->getOperand(1));
+  ValueRef res = this->result_ref(cmp);
+  if (cmp_ty->isX86_FP80Ty()) {
+    if constexpr (requires { &Derived::fp80_cmp; }) {
+      derived()->fp80_cmp(pred, lhs.part(0), rhs.part(0), res.part(0));
+      return true;
+    }
   }
 
   if (!cmp_ty->isFloatTy() && !cmp_ty->isDoubleTy()) {
@@ -4000,9 +4228,6 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_fcmp(
     }
   }
 
-  ValueRef lhs = this->val_ref(cmp->getOperand(0));
-  ValueRef rhs = this->val_ref(cmp->getOperand(1));
-  ValueRef res = this->result_ref(cmp);
   return (derived()->*fn)(lhs.part(0), rhs.part(0), res.part(0));
 }
 
@@ -4010,39 +4235,13 @@ template <typename Adaptor, typename Derived, typename Config>
 bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_switch(
     const llvm::Instruction *inst, const ValInfo &, u64) noexcept {
   const auto *switch_inst = llvm::cast<llvm::SwitchInst>(inst);
-  ValuePartRef cmp_ref{this};
-  AsmReg cmp_reg;
-  bool width_is_32 = false;
-  {
-    llvm::Value *cond = switch_inst->getCondition();
-    u32 width = cond->getType()->getIntegerBitWidth();
-    if (width > 64) {
-      return false;
-    }
-
-    auto [_, arg_ref] = this->val_ref_single(cond);
-
-    width_is_32 = width <= 32;
-    if (u32 dst_width = tpde::util::align_up(width, 32); width != dst_width) {
-      cmp_ref = std::move(arg_ref).into_extended(false, width, dst_width);
-    } else if (arg_ref.has_assignment()) {
-      cmp_ref = std::move(arg_ref).into_temporary();
-    } else {
-      cmp_ref = std::move(arg_ref);
-    }
-    cmp_reg = cmp_ref.has_reg() ? cmp_ref.cur_reg() : cmp_ref.load_to_reg();
+  llvm::Value *cond = switch_inst->getCondition();
+  u32 width = cond->getType()->getIntegerBitWidth();
+  if (width > 64) {
+    return false;
   }
 
-  // We must not evict any registers in the branching code, as we don't track
-  // the individual value states per block. Hence, we must not allocate any
-  // registers (e.g., for constants, jump table address) below.
-  ScratchReg scratch2{this};
-  AsmReg tmp_reg = scratch2.alloc_gp();
-
-  const auto spilled = this->spill_before_branch();
-  this->begin_branch_region();
-
-  // get all cases, their target block and sort them in ascending order
+  // Collect cases, their target block and sort them in ascending order.
   tpde::util::SmallVector<std::pair<u64, IRBlockRef>, 64> cases;
   assert(switch_inst->getNumCases() <= 200000);
   cases.reserve(switch_inst->getNumCases());
@@ -4055,117 +4254,11 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_switch(
     return lhs.first < rhs.first;
   });
 
-  // because some blocks might have PHI-values we need to first jump to a
-  // label which then fixes the registers and then jumps to the block
-  // TODO(ts): check which blocks need PHIs and otherwise jump directly to
-  // them? probably better for branch predictor
+  auto def = this->adaptor->block_lookup_idx(switch_inst->getDefaultDest());
 
-  tpde::util::SmallVector<tpde::Label, 64> case_labels;
-  for (auto i = 0u; i < cases.size(); ++i) {
-    case_labels.push_back(this->text_writer.label_create());
-  }
-
-  const auto default_label = this->text_writer.label_create();
-
-  const auto build_range = [&,
-                            this](size_t begin, size_t end, const auto &self) {
-    assert(begin <= end);
-    const auto num_cases = end - begin;
-    if (num_cases <= 4) {
-      // if there are four or less cases we just compare the values
-      // against each of them
-      for (auto i = 0u; i < num_cases; ++i) {
-        derived()->switch_emit_cmpeq(case_labels[begin + i],
-                                     cmp_reg,
-                                     tmp_reg,
-                                     cases[begin + i].first,
-                                     width_is_32);
-      }
-
-      derived()->generate_raw_jump(Derived::Jump::jmp, default_label);
-      return;
-    }
-
-    // check if the density of the values is high enough to warrant building
-    // a jump table
-    auto range = cases[end - 1].first - cases[begin].first;
-    // we will get wrong results if range is -1 so skip the jump table if
-    // that is the case
-    if (range != 0xFFFF'FFFF'FFFF'FFFF && (range / num_cases) < 8) {
-      // for gcc, it seems that if there are less than 8 values per
-      // case it will build a jump table so we do that, too
-
-      // the actual range is one greater than the result we get from
-      // subtracting so adjust for that
-      range += 1;
-
-      tpde::util::SmallVector<tpde::Label, 32> label_vec;
-      std::span<tpde::Label> labels;
-      if (range == num_cases) {
-        labels = std::span{case_labels.begin() + begin, num_cases};
-      } else {
-        label_vec.resize(range, default_label);
-        for (auto i = 0u; i < num_cases; ++i) {
-          label_vec[cases[begin + i].first - cases[begin].first] =
-              case_labels[begin + i];
-        }
-        labels = std::span{label_vec.begin(), range};
-      }
-
-      // Give target the option to emit a jump table.
-      if (derived()->switch_emit_jump_table(default_label,
-                                            labels,
-                                            cmp_reg,
-                                            tmp_reg,
-                                            cases[begin].first,
-                                            cases[end - 1].first,
-                                            width_is_32)) {
-        return;
-      }
-    }
-
-    // do a binary search step
-    const auto half_len = num_cases / 2;
-    const auto half_value = cases[begin + half_len].first;
-    const auto gt_label = this->text_writer.label_create();
-
-    // this will cmp against the input value, jump to the case if it is
-    // equal or to gt_label if the value is greater. Otherwise it will
-    // fall-through
-    derived()->switch_emit_binary_step(case_labels[begin + half_len],
-                                       gt_label,
-                                       cmp_reg,
-                                       tmp_reg,
-                                       half_value,
-                                       width_is_32);
-    // search the lower half
-    self(begin, begin + half_len, self);
-
-    // and the upper half
-    this->label_place(gt_label);
-    self(begin + half_len + 1, end, self);
-  };
-
-  build_range(0, case_labels.size(), build_range);
-
-  // write out the labels
-  this->label_place(default_label);
-  // TODO(ts): factor into arch-code?
-  derived()->generate_branch_to_block(
-      Derived::Jump::jmp,
-      this->adaptor->block_lookup_idx(switch_inst->getDefaultDest()),
-      false,
-      false);
-
-  for (auto i = 0u; i < cases.size(); ++i) {
-    this->label_place(case_labels[i]);
-    derived()->generate_branch_to_block(
-        Derived::Jump::jmp, cases[i].second, false, false);
-  }
-
-  this->end_branch_region();
-  this->release_spilled_regs(spilled);
-
+  // cond must be ref-counted before generate_switch.
+  ScratchReg cond_scratch = this->val_ref(cond).part(0).into_scratch();
+  this->generate_switch(std::move(cond_scratch), width, def, cases);
   return true;
 }
 
@@ -4261,10 +4354,10 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_invoke(
   const auto num_clauses = landing_pad->getNumClauses();
   const auto only_cleanup = is_cleanup && num_clauses == 0;
 
-  this->assembler.except_add_call_site(off_before_call,
-                                       off_after_call - off_before_call,
-                                       u32(unwind_label), // TODO: Label type?
-                                       only_cleanup);
+  this->text_writer.except_add_call_site(off_before_call,
+                                         off_after_call - off_before_call,
+                                         unwind_label,
+                                         only_cleanup);
 
   if (only_cleanup) {
     // no clause so we are done
@@ -4276,16 +4369,15 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_invoke(
       auto *C = landing_pad->getClause(i);
       SymRef sym;
       if (!C->isNullValue()) {
-        assert(llvm::dyn_cast<llvm::GlobalValue>(C));
-        sym = lookup_type_info_sym(C);
+        sym = lookup_type_info_sym(llvm::cast<llvm::GlobalValue>(C));
       }
-      this->assembler.except_add_action(i == 0, sym);
+      this->text_writer.except_add_action(i == 0, sym);
     } else {
       assert(landing_pad->isFilter(i));
       auto *C = landing_pad->getClause(i);
       assert(C->getType()->isArrayTy());
       if (C->getType()->getArrayNumElements() == 0) {
-        this->assembler.except_add_empty_spec_action(i == 0);
+        this->text_writer.except_add_empty_spec_action(i == 0);
       } else {
         TPDE_LOG_ERR("Exception filters with non-zero length arrays "
                      "not supported");
@@ -4296,7 +4388,7 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_invoke(
 
   if (is_cleanup) {
     assert(num_clauses != 0);
-    this->assembler.except_add_cleanup_action();
+    this->text_writer.except_add_cleanup_action();
   }
 
   return true;
@@ -4326,20 +4418,25 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_resume(
 template <typename Adaptor, typename Derived, typename Config>
 typename LLVMCompilerBase<Adaptor, Derived, Config>::SymRef
     LLVMCompilerBase<Adaptor, Derived, Config>::lookup_type_info_sym(
-        IRValueRef value) noexcept {
+        const llvm::GlobalValue *value) noexcept {
   for (const auto &[val, sym] : type_info_syms) {
     if (val == value) {
       return sym;
     }
   }
 
-  const auto sym = global_sym(llvm::cast<llvm::GlobalValue>(value));
+  const auto sym = global_sym(value);
 
   u32 off;
   u8 tmp[8] = {};
   auto rodata = this->assembler.get_data_section(true, true);
-  const auto addr_sym = this->assembler.sym_def_data(
-      rodata, {}, {tmp, sizeof(tmp)}, 8, Assembler::SymBinding::LOCAL, &off);
+  const auto addr_sym =
+      this->assembler.sym_def_data(rodata,
+                                   {},
+                                   {tmp, sizeof(tmp)},
+                                   8,
+                                   tpde::Assembler::SymBinding::LOCAL,
+                                   &off);
   this->assembler.reloc_abs(rodata, sym, off, 0);
 
   type_info_syms.emplace_back(value, addr_sym);
@@ -4554,42 +4651,49 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_intrin(
     return true;
   }
   case llvm::Intrinsic::fmuladd: {
-    auto op1_ref = this->val_ref(inst->getOperand(0));
-    auto op2_ref = this->val_ref(inst->getOperand(1));
-    auto op3_ref = this->val_ref(inst->getOperand(2));
+    ValueRef op1 = this->val_ref(inst->getOperand(0));
+    ValueRef op2 = this->val_ref(inst->getOperand(1));
+    ValueRef op3 = this->val_ref(inst->getOperand(2));
+    ValueRef res = this->result_ref(inst);
 
-    if (inst->getType()->isFP128Ty()) {
+    using EncodeFnTy = bool (Derived::*)(GenericValuePart &&,
+                                         GenericValuePart &&,
+                                         GenericValuePart &&,
+                                         ValuePart &&);
+    EncodeFnTy fn = nullptr;
+    switch (info.type) {
+      using enum LLVMBasicValType;
+    case f32: fn = &Derived::encode_fmuladdf32; break;
+    case f64: fn = &Derived::encode_fmuladdf64; break;
+    case v2f32: fn = &Derived::encode_fmuladdv2f32; break;
+    case v4f32: fn = &Derived::encode_fmuladdv4f32; break;
+    case v2f64: fn = &Derived::encode_fmuladdv2f64; break;
+    case f128: {
       auto cb1 = derived()->create_call_builder();
-      cb1->add_arg(op1_ref.part(0), tpde::CCAssignment{});
-      cb1->add_arg(op2_ref.part(0), tpde::CCAssignment{});
+      cb1->add_arg(op1.part(0), tpde::CCAssignment{});
+      cb1->add_arg(op2.part(0), tpde::CCAssignment{});
       cb1->call(get_libfunc_sym(LibFunc::multf3));
       ValuePartRef tmp{this, Config::FP_BANK};
       cb1->add_ret(tmp, tpde::CCAssignment{});
 
       auto cb2 = derived()->create_call_builder();
       cb2->add_arg(std::move(tmp), tpde::CCAssignment{});
-      cb2->add_arg(op3_ref.part(0), tpde::CCAssignment{});
+      cb2->add_arg(op3.part(0), tpde::CCAssignment{});
       cb2->call(get_libfunc_sym(LibFunc::addtf3));
-      auto res_vr2 = this->result_ref(inst);
-      cb2->add_ret(res_vr2);
+      cb2->add_ret(res);
       return true;
     }
-
-    if (!inst->getType()->isFloatTy() && !inst->getType()->isDoubleTy()) {
+    case f80:
+      if constexpr (requires { &Derived::fp80_muladd; }) {
+        derived()->fp80_muladd(
+            op1.part(0), op2.part(0), op3.part(0), res.part(0));
+        return true;
+      }
       return false;
+    default: return false;
     }
 
-    const auto is_double = inst->getOperand(0)->getType()->isDoubleTy();
-
-    auto [res_vr, res_ref] = this->result_ref_single(inst);
-    if (is_double) {
-      derived()->encode_fmaf64(
-          op1_ref.part(0), op2_ref.part(0), op3_ref.part(0), res_ref);
-    } else {
-      derived()->encode_fmaf32(
-          op1_ref.part(0), op2_ref.part(0), op3_ref.part(0), res_ref);
-    }
-    return true;
+    return (derived()->*fn)(op1.part(0), op2.part(0), op3.part(0), res.part(0));
   }
   case llvm::Intrinsic::abs: {
     auto *val = inst->getOperand(0);
@@ -4717,6 +4821,18 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_intrin(
     return compile_float_to_int(inst, info, /*flags=!sign|sat*/ 0b10);
   case llvm::Intrinsic::fptosi_sat:
     return compile_float_to_int(inst, info, /*flags=sign|sat*/ 0b11);
+  case llvm::Intrinsic::vector_reduce_add:
+  case llvm::Intrinsic::vector_reduce_fadd:
+  case llvm::Intrinsic::vector_reduce_mul:
+  case llvm::Intrinsic::vector_reduce_fmul:
+  case llvm::Intrinsic::vector_reduce_and:
+  case llvm::Intrinsic::vector_reduce_or:
+  case llvm::Intrinsic::vector_reduce_xor:
+  case llvm::Intrinsic::vector_reduce_smax:
+  case llvm::Intrinsic::vector_reduce_smin:
+  case llvm::Intrinsic::vector_reduce_umax:
+  case llvm::Intrinsic::vector_reduce_umin:
+    return compile_vector_reduce(inst, info);
   case llvm::Intrinsic::fshl:
   case llvm::Intrinsic::fshr: {
     if (!inst->getType()->isIntegerTy()) {
@@ -4853,85 +4969,33 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_intrin(
   case llvm::Intrinsic::ctlz:
   case llvm::Intrinsic::cttz: {
     auto *val = inst->getOperand(0);
-    assert(val->getType()->isIntegerTy());
-    const auto width = val->getType()->getIntegerBitWidth();
-    if (width != 8 && width != 16 && width != 32 && width != 64) {
+    if (!val->getType()->isIntegerTy()) {
       return false;
     }
-
-    const auto zero_is_poison =
-        !llvm::cast<llvm::ConstantInt>(inst->getOperand(1))->isZero();
-
-    auto val_ref = this->val_ref(val);
-    auto [res_vr, res_ref] = this->result_ref_single(inst);
-
-    if (intrin_id == llvm::Intrinsic::ctlz) {
-      switch (width) {
-      case 8:
-        if (zero_is_poison) {
-          derived()->encode_ctlzi8_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_ctlzi8(val_ref.part(0), res_ref);
-        }
-        break;
-      case 16:
-        if (zero_is_poison) {
-          derived()->encode_ctlzi16_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_ctlzi16(val_ref.part(0), res_ref);
-        }
-        break;
-      case 32:
-        if (zero_is_poison) {
-          derived()->encode_ctlzi32_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_ctlzi32(val_ref.part(0), res_ref);
-        }
-        break;
-      case 64:
-        if (zero_is_poison) {
-          derived()->encode_ctlzi64_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_ctlzi64(val_ref.part(0), res_ref);
-        }
-        break;
-      default: TPDE_UNREACHABLE("invalid size");
-      }
-    } else {
-      assert(intrin_id == llvm::Intrinsic::cttz);
-      switch (width) {
-      case 8:
-        if (zero_is_poison) {
-          derived()->encode_cttzi32_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_cttzi8(val_ref.part(0), res_ref);
-        }
-        break;
-      case 16:
-        if (zero_is_poison) {
-          derived()->encode_cttzi32_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_cttzi16(val_ref.part(0), res_ref);
-        }
-        break;
-      case 32:
-        if (zero_is_poison) {
-          derived()->encode_cttzi32_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_cttzi32(val_ref.part(0), res_ref);
-        }
-        break;
-      case 64:
-        if (zero_is_poison) {
-          derived()->encode_cttzi64_zero_poison(val_ref.part(0), res_ref);
-        } else {
-          derived()->encode_cttzi64(val_ref.part(0), res_ref);
-        }
-        break;
-      default: TPDE_UNREACHABLE("invalid size");
-      }
+    u32 width_idx = 0;
+    switch (val->getType()->getIntegerBitWidth()) {
+    case 8: width_idx = 0; break;
+    case 16: width_idx = 1; break;
+    case 32: width_idx = 2; break;
+    case 64: width_idx = 3; break;
+    default: return false;
     }
-    return true;
+
+    using EncodeFnTy = bool (Derived::*)(GenericValuePart &&, ValuePart &&);
+    static constexpr EncodeFnTy encode_fns[4][2][2] = {
+#define F(n, op, suffix) &Derived::encode_##op##i##n##suffix
+        {  {F(8, ctlz, ), F(8, ctlz, _zp)},  {F(8, cttz, ), F(32, cttz, _zp)}},
+        {{F(16, ctlz, ), F(16, ctlz, _zp)}, {F(16, cttz, ), F(32, cttz, _zp)}},
+        {{F(32, ctlz, ), F(32, ctlz, _zp)}, {F(32, cttz, ), F(32, cttz, _zp)}},
+        {{F(64, ctlz, ), F(64, ctlz, _zp)}, {F(64, cttz, ), F(64, cttz, _zp)}},
+#undef F
+    };
+    bool zero_is_poison =
+        !llvm::cast<llvm::ConstantInt>(inst->getOperand(1))->isZero();
+    bool is_cttz = intrin_id == llvm::Intrinsic::cttz;
+    EncodeFnTy fn = encode_fns[width_idx][is_cttz][zero_is_poison];
+    return (derived()->*fn)(this->val_ref(val).part(0),
+                            this->result_ref(inst).part(0));
   }
   case llvm::Intrinsic::bitreverse: {
     auto *val = inst->getOperand(0);
@@ -4999,12 +5063,11 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_intrin(
     return true;
   }
   case llvm::Intrinsic::eh_typeid_for: {
-    auto *type = inst->getOperand(0);
-    assert(llvm::isa<llvm::GlobalValue>(type));
+    auto *type = llvm::cast<llvm::GlobalValue>(inst->getOperand(0));
 
     // not the most efficient but it's OK
     const auto type_info_sym = lookup_type_info_sym(type);
-    const u64 idx = this->assembler.except_type_idx_for_sym(type_info_sym);
+    const u64 idx = this->text_writer.except_type_idx_for_sym(type_info_sym);
 
     auto const_ref = ValuePartRef{this, idx, 4, Config::GP_BANK};
     this->result_ref(inst).part(0).set_value(std::move(const_ref));
@@ -5124,7 +5187,9 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_overflow_intrin(
   ValueRef res = this->result_ref(inst);
 
   auto *ty = inst->getOperand(0)->getType();
-  assert(ty->isIntegerTy());
+  if (!ty->isIntegerTy()) {
+    return false;
+  }
   const auto width = ty->getIntegerBitWidth();
 
   if (width == 128) {
@@ -5233,6 +5298,105 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_saturating_intrin(
   ValueRef rhs = this->val_ref(inst->getOperand(1));
   ValueRef res = this->result_ref(inst);
   return (derived()->*encode_fn)(lhs.part(0), rhs.part(0), res.part(0));
+}
+
+template <typename Adaptor, typename Derived, typename Config>
+bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_vector_reduce(
+    const llvm::IntrinsicInst *inst, const ValInfo &info) noexcept {
+  if (inst->getType()->isIntegerTy(1)) {
+    // i1 needs special handling
+    // and/mul/umin/smax = all bits one
+    // or/umax/smin = any bit one
+    // xor/add = parity
+    return false;
+  }
+
+  LLVMBasicValType elem_ty = info.type;
+
+  using EncodeFnTy =
+      bool (Derived::*)(GenericValuePart &&, GenericValuePart &&, ValuePart &);
+  EncodeFnTy fn;
+  bool has_start_elem = false;
+  switch (inst->getIntrinsicID()) {
+  case llvm::Intrinsic::vector_reduce_add:
+    if (elem_ty == LLVMBasicValType::i64) {
+      fn = &Derived::encode_addi64;
+    } else {
+      fn = &Derived::encode_addi32;
+    }
+    break;
+  case llvm::Intrinsic::vector_reduce_fadd:
+    if (elem_ty == LLVMBasicValType::f64) {
+      fn = &Derived::encode_addf64;
+    } else {
+      fn = &Derived::encode_addf32;
+    }
+    has_start_elem = true;
+    break;
+  case llvm::Intrinsic::vector_reduce_mul:
+    if (elem_ty == LLVMBasicValType::i64) {
+      fn = &Derived::encode_muli64;
+    } else {
+      fn = &Derived::encode_muli32;
+    }
+    break;
+  case llvm::Intrinsic::vector_reduce_fmul:
+    if (elem_ty == LLVMBasicValType::f64) {
+      fn = &Derived::encode_mulf64;
+    } else {
+      fn = &Derived::encode_mulf32;
+    }
+    has_start_elem = true;
+    break;
+  case llvm::Intrinsic::vector_reduce_and:
+    if (elem_ty == LLVMBasicValType::i64) {
+      fn = &Derived::encode_landi64;
+    } else {
+      fn = &Derived::encode_landi32;
+    }
+    break;
+  case llvm::Intrinsic::vector_reduce_or:
+    if (elem_ty == LLVMBasicValType::i64) {
+      fn = &Derived::encode_lori64;
+    } else {
+      fn = &Derived::encode_lori32;
+    }
+    break;
+  case llvm::Intrinsic::vector_reduce_xor:
+    if (elem_ty == LLVMBasicValType::i64) {
+      fn = &Derived::encode_lxori64;
+    } else {
+      fn = &Derived::encode_lxori32;
+    }
+    break;
+  default:
+    // Still missing: smin/smax/umin/umix/fmin/fmax/fminimum/fmaximum
+    return false;
+  }
+
+  llvm::Value *src_op = inst->getOperand(has_start_elem ? 1 : 0);
+  ValueRef src_ref = this->val_ref(src_op);
+  ValueRef src_ref_disowned = src_ref.disowned();
+
+  ValuePartRef elem{this, LLVMAdaptor::basic_ty_part_bank(elem_ty)};
+  ValuePartRef acc{this, LLVMAdaptor::basic_ty_part_bank(elem_ty)};
+
+  if (has_start_elem) {
+    acc.set_value(this->val_ref(inst->getOperand(0)).part(0));
+  } else {
+    derived()->extract_element(src_ref_disowned, 0, elem_ty, acc);
+  }
+
+  auto *vec_ty = llvm::cast<llvm::FixedVectorType>(src_op->getType());
+  unsigned nelem = vec_ty->getNumElements();
+  for (unsigned i = has_start_elem ? 0 : 1; i != nelem; i++) {
+    derived()->extract_element(src_ref_disowned, i, elem_ty, elem);
+    (derived()->*fn)(std::move(acc), std::move(elem), acc);
+  }
+
+  this->result_ref(inst).part(0).set_value(std::move(acc));
+
+  return true;
 }
 
 template <typename Adaptor, typename Derived, typename Config>

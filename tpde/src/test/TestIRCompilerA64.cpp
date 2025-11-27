@@ -2,12 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <fstream>
-
-#include "tpde/arm64/CompilerA64.hpp"
+#include "TestIRCompilerA64.hpp"
 
 #include "TestIR.hpp"
-#include "TestIRCompilerA64.hpp"
+#include "TestIRAdaptor.hpp"
+#include "tpde/arm64/CompilerA64.hpp"
 
 namespace {
 using namespace tpde;
@@ -16,24 +15,12 @@ using namespace tpde::test;
 struct TestIRCompilerA64 : a64::CompilerA64<TestIRAdaptor, TestIRCompilerA64> {
   using Base = a64::CompilerA64<TestIRAdaptor, TestIRCompilerA64>;
 
-  using IRValueRef = typename Base::IRValueRef;
-  using IRFuncRef = typename Base::IRFuncRef;
-  using ValuePartRef = typename Base::ValuePartRef;
-  using ScratchReg = typename Base::ScratchReg;
-  using AsmReg = typename Base::AsmReg;
-  using InstRange = typename Base::InstRange;
-
   bool no_fixed_assignments;
 
   explicit TestIRCompilerA64(TestIRAdaptor *adaptor, bool no_fixed_assignments)
       : Base{adaptor}, no_fixed_assignments(no_fixed_assignments) {}
 
   SymRef cur_personality_func() const noexcept { return {}; }
-
-  static bool arg_is_int128(IRValueRef) noexcept { return false; }
-  static bool arg_allow_split_reg_stack_passing(IRValueRef) noexcept {
-    return false;
-  }
 
   bool cur_func_may_emit_calls() const noexcept {
     return this->ir()->functions[this->adaptor->cur_func].has_call;
@@ -110,70 +97,40 @@ bool TestIRCompilerA64::compile_inst(IRInstRef inst_idx, InstRange) noexcept {
     rb.ret();
     return true;
   }
+  case trap:
+    ASM(BRK, 1);
+    this->release_regs_after_return();
+    return true;
   case alloca: return true;
   case br: {
     auto block_idx = ir()->value_operands[value.op_begin_idx];
-    auto spilled = this->spill_before_branch();
-
-    this->generate_branch_to_block(
-        Jump::jmp, static_cast<IRBlockRef>(block_idx), false, true);
-
-    this->release_spilled_regs(spilled);
+    this->generate_uncond_branch(IRBlockRef(block_idx));
     return true;
   }
   case zerofill: {
     auto size = ir()->value_operands[value.op_begin_idx];
     this->text_writer.ensure_space(size);
     ASM(B, size / 4);
+    std::memset(this->text_writer.cur_ptr(), 0, (size - 4) & -4u);
     this->text_writer.cur_ptr() += (size - 4) & -4u;
     return true;
   }
   case condbr:
   case tbz: {
-    auto val_idx =
-        static_cast<IRValueRef>(ir()->value_operands[value.op_begin_idx]);
-    auto true_block =
-        static_cast<IRBlockRef>(ir()->value_operands[value.op_begin_idx + 1]);
-    auto false_block =
-        static_cast<IRBlockRef>(ir()->value_operands[value.op_begin_idx + 2]);
+    auto val_idx = IRValueRef(ir()->value_operands[value.op_begin_idx]);
+    auto true_block = IRBlockRef(ir()->value_operands[value.op_begin_idx + 1]);
+    auto false_block = IRBlockRef(ir()->value_operands[value.op_begin_idx + 2]);
 
     auto [_, val] = this->val_ref_single(val_idx);
-
-    auto true_needs_split = this->branch_needs_split(true_block);
-    auto false_needs_split = this->branch_needs_split(false_block);
-
     auto val_reg = val.load_to_reg();
-
-    auto spilled = this->spill_before_branch();
-
-    Jump jump;
     if (value.op == condbr) {
       ASM(CMPxi, val_reg, 0);
-      jump = Jump::Jne;
+      this->generate_cond_branch(Jump::Jne, true_block, false_block);
     } else {
       u32 bit = ir()->value_operands[value.op_begin_idx + 3];
-      jump = Jump(Jump::Tbz, val_reg, u8(bit));
+      Jump jump(Jump::Tbz, val_reg, u8(bit));
+      this->generate_cond_branch(jump, true_block, false_block);
     }
-
-    Jump inv_jump = invert_jump(jump);
-
-    if (this->analyzer.block_ref(this->next_block()) == true_block) {
-      this->generate_branch_to_block(
-          inv_jump, false_block, false_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, true_block, false, true);
-    } else if (this->analyzer.block_ref(this->next_block()) == false_block) {
-      this->generate_branch_to_block(jump, true_block, true_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, false_block, false, true);
-    } else if (!true_needs_split) {
-      this->generate_branch_to_block(jump, true_block, false, false);
-      this->generate_branch_to_block(Jump::jmp, false_block, false, true);
-    } else {
-      this->generate_branch_to_block(
-          inv_jump, false_block, false_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, true_block, false, true);
-    }
-
-    this->release_spilled_regs(spilled);
     return true;
   }
   case call: {
@@ -293,26 +250,11 @@ bool TestIRCompilerA64::compile_condselect(IRInstRef inst_idx) noexcept {
 }
 } // namespace
 
-bool test::compile_ir_arm64(TestIR *ir,
-                            bool no_fixed_assignments,
-                            const std::string &obj_out_path) {
+std::vector<u8> test::compile_ir_arm64(TestIR *ir, bool no_fixed_assignments) {
   test::TestIRAdaptor adaptor{ir};
   TestIRCompilerA64 compiler{&adaptor, no_fixed_assignments};
-
   if (!compiler.compile()) {
-    TPDE_LOG_ERR("Failed to compile IR");
-    return false;
+    return {};
   }
-
-  if (!obj_out_path.empty()) {
-    const std::vector<u8> data = compiler.assembler.build_object_file();
-    std::ofstream out_file{obj_out_path, std::ios::binary};
-    if (!out_file.is_open()) {
-      TPDE_LOG_ERR("Failed to open output file");
-      return false;
-    }
-    out_file.write(reinterpret_cast<const char *>(data.data()), data.size());
-  }
-
-  return true;
+  return compiler.assembler.build_object_file();
 }

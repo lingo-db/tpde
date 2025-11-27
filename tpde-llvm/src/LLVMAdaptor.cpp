@@ -145,24 +145,40 @@ std::pair<llvm::Value *, llvm::Instruction *>
 
   if (auto *agg = llvm::dyn_cast<llvm::ConstantAggregate>(cst)) [[unlikely]] {
     llvm::Instruction *ins_begin = nullptr;
-    llvm::SmallVector<llvm::Value *> repls;
+    llvm::SmallVector<std::pair<unsigned, llvm::Value *>> repls;
+    bool has_base_values = false;
     for (auto it : llvm::enumerate(agg->operands())) {
       auto *cst = llvm::cast<llvm::Constant>(it.value());
       if (auto [repl, inst] = fixup_constant(cst, ins_before); repl) {
-        repls.resize(agg->getNumOperands());
-        repls[it.index()] = repl;
+        repls.emplace_back(it.index(), repl);
         if (!ins_begin) {
           ins_begin = inst;
         }
+      } else if (!llvm::isa<llvm::UndefValue, llvm::PoisonValue>(cst)) {
+        has_base_values = true;
       }
     }
     if (!repls.empty()) {
-      // TODO: optimize so that all supported constants are in the
-      // top-level constant?
-      llvm::Value *repl = llvm::PoisonValue::get(cst->getType());
-      for (auto it : llvm::enumerate(repls)) {
-        unsigned idx = it.index();
-        auto *el = it.value() ? it.value() : agg->getOperand(idx);
+      llvm::Value *repl;
+      if (has_base_values) {
+        llvm::SmallVector<llvm::Constant *> base;
+        base.reserve(agg->getNumOperands());
+        for (const auto &el : agg->operands()) {
+          base.push_back(llvm::cast<llvm::Constant>(el));
+        }
+        for (const auto &[idx, el] : repls) {
+          base[idx] = llvm::PoisonValue::get(el->getType());
+        }
+        if (auto *sty = llvm::dyn_cast<llvm::StructType>(agg->getType())) {
+          repl = llvm::ConstantStruct::get(sty, base);
+        } else {
+          repl = llvm::ConstantArray::get(
+              llvm::cast<llvm::ArrayType>(agg->getType()), base);
+        }
+      } else {
+        repl = llvm::PoisonValue::get(agg->getType());
+      }
+      for (const auto &[idx, el] : repls) {
         repl = llvm::InsertValueInst::Create(repl, el, {idx}, "", ins_before);
       }
       return {repl, ins_begin};
@@ -354,7 +370,11 @@ bool LLVMAdaptor::switch_func(const IRFuncRef function) noexcept {
           auto ins_before = block->getTerminator()->getIterator();
           if (block->begin() != ins_before) {
             // ins_before.getP
+#if LLVM_VERSION_MAJOR >= 22
+            auto *prev_inst = ins_before->getPrevNode();
+#else
             auto *prev_inst = ins_before->getPrevNonDebugInstruction();
+#endif
             if (prev_inst && llvm::isa<llvm::CmpInst>(prev_inst)) {
               // make sure fusing can still happen
               ins_before = prev_inst->getIterator();
@@ -643,6 +663,13 @@ std::pair<unsigned, unsigned>
       incompatible = true;
     }
     complex_part_types[desc_idx].desc.incompatible_layout |= incompatible;
+  } else if (type->isX86_FP80Ty()) [[unlikely]] {
+    ty = LLVMBasicValType::f80;
+    num = 1;
+    // Mark x86_fp80 inside structs as incompatible for now. This is difficult
+    // to handle: for returns, it would need special handling, and for
+    // parameters, a part of the argument would need to be passed byval.
+    complex_part_types[desc_idx].desc.incompatible_layout |= true;
   }
 
   if (ty != LLVMBasicValType::invalid) {
@@ -738,6 +765,9 @@ std::pair<unsigned, unsigned>
         it->second = std::make_pair(ty, num);
         return it->second;
       }
+    } else if (type->isX86_FP80Ty()) [[unlikely]] {
+      it->second = {LLVMBasicValType::f80, 1};
+      return it->second;
     }
 
     unsigned start = complex_part_types.size();

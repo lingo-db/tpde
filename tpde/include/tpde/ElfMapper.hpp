@@ -9,7 +9,7 @@
 #include "tpde/util/SmallVector.hpp"
 #include "tpde/util/function_ref.hpp"
 
-namespace tpde {
+namespace tpde::elf {
 
 class ElfMapper {
 public:
@@ -17,7 +17,7 @@ public:
   using SymbolResolver = util::function_ref<void *(std::string_view)>;
 
 private:
-  u8 *mapped_addr;
+  u8 *mapped_addr = nullptr;
   size_t mapped_size;
   u32 registered_frame_off = 0;
 
@@ -41,4 +41,4 @@ public:
   void *get_sym_addr(SymRef sym) noexcept;
 };
 
-} // namespace tpde
+} // namespace tpde::elf

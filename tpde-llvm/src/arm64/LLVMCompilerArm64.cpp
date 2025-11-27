@@ -32,19 +32,12 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                                       LLVMCompilerArm64,
                                       LLVMCompilerBase,
                                       CompilerConfig>;
-  using EncCompiler = EncodeCompiler<LLVMAdaptor,
-                                     LLVMCompilerArm64,
-                                     LLVMCompilerBase,
-                                     CompilerConfig>;
 
   using ScratchReg = typename Base::ScratchReg;
   using ValuePartRef = typename Base::ValuePartRef;
   using ValuePart = typename Base::ValuePart;
   using ValueRef = typename Base::ValueRef;
   using GenericValuePart = typename Base::GenericValuePart;
-  using InstRange = typename Base::InstRange;
-
-  using Assembler = typename Base::Assembler;
 
   using AsmReg = typename Base::AsmReg;
 
@@ -63,21 +56,14 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
   void reset() noexcept {
     // TODO: move to LLVMCompilerBase
     Base::reset();
-    EncCompiler::reset();
-  }
-
-  bool arg_is_int128(const IRValueRef value) const noexcept {
-    return value->getType()->isIntegerTy(128);
+    EncodeCompiler::reset();
   }
 
   bool arg_allow_split_reg_stack_passing(IRValueRef value) const noexcept {
-    // we allow splitting the value if it is an aggregate but not if it is an
-    // i128 or array
+    // All types except i128 and arrays can be split across registers/stack.
     llvm::Type *ty = value->getType();
     return !ty->isIntegerTy(128) && !ty->isArrayTy();
   }
-
-  void finish_func(u32 func_idx) noexcept;
 
   void load_address_of_var_reference(AsmReg dst,
                                      tpde::AssignmentPartRef ap) noexcept;
@@ -95,37 +81,11 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                       GenericValuePart el) noexcept;
 
   bool compile_br(const llvm::Instruction *, const ValInfo &, u64) noexcept;
-  void generate_conditional_branch(Jump jmp,
-                                   IRBlockRef true_target,
-                                   IRBlockRef false_target) noexcept;
   bool compile_inline_asm(const llvm::CallBase *) noexcept;
   bool compile_icmp(const llvm::Instruction *, const ValInfo &, u64) noexcept;
   void compile_i32_cmp_zero(AsmReg reg, llvm::CmpInst::Predicate p) noexcept;
 
   GenericValuePart create_addr_for_alloca(tpde::AssignmentPartRef ap) noexcept;
-
-  void switch_emit_cmp(AsmReg cmp_reg,
-                       AsmReg tmp_reg,
-                       u64 case_value,
-                       bool width_is_32) noexcept;
-  void switch_emit_cmpeq(tpde::Label case_label,
-                         AsmReg cmp_reg,
-                         AsmReg tmp_reg,
-                         u64 case_value,
-                         bool width_is_32) noexcept;
-  bool switch_emit_jump_table(tpde::Label default_label,
-                              std::span<tpde::Label> labels,
-                              AsmReg cmp_reg,
-                              AsmReg tmp_reg,
-                              u64 low_bound,
-                              u64 high_bound,
-                              bool width_is_32) noexcept;
-  void switch_emit_binary_step(tpde::Label case_label,
-                               tpde::Label gt_label,
-                               AsmReg cmp_reg,
-                               AsmReg tmp_reg,
-                               u64 case_value,
-                               bool width_is_32) noexcept;
 
   void create_helper_call(std::span<IRValueRef> args,
                           ValueRef *result,
@@ -143,15 +103,6 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                                   ValuePart &&res_of) noexcept;
 };
 
-void LLVMCompilerArm64::finish_func(u32 func_idx) noexcept {
-  Base::finish_func(func_idx);
-
-  if (llvm::timeTraceProfilerEnabled()) {
-    llvm::timeTraceProfilerEnd(time_entry);
-    time_entry = nullptr;
-  }
-}
-
 void LLVMCompilerArm64::load_address_of_var_reference(
     AsmReg dst, tpde::AssignmentPartRef ap) noexcept {
   auto *global = this->adaptor->global_list[ap.variable_ref_data()];
@@ -165,15 +116,19 @@ void LLVMCompilerArm64::load_address_of_var_reference(
   this->text_writer.ensure_space(8);
   if (!use_local_access(global)) {
     // mov the ptr from the GOT
-    reloc_text(sym, R_AARCH64_ADR_GOT_PAGE, this->text_writer.offset());
+    reloc_text(
+        sym, tpde::elf::R_AARCH64_ADR_GOT_PAGE, this->text_writer.offset());
     ASMNC(ADRP, dst, 0, 0);
-    reloc_text(sym, R_AARCH64_LD64_GOT_LO12_NC, this->text_writer.offset());
+    reloc_text(
+        sym, tpde::elf::R_AARCH64_LD64_GOT_LO12_NC, this->text_writer.offset());
     ASMNC(LDRxu, dst, dst, 0);
   } else {
     // emit lea with relocation
-    reloc_text(sym, R_AARCH64_ADR_PREL_PG_HI21, this->text_writer.offset());
+    reloc_text(
+        sym, tpde::elf::R_AARCH64_ADR_PREL_PG_HI21, this->text_writer.offset());
     ASMNC(ADRP, dst, 0, 0);
-    reloc_text(sym, R_AARCH64_ADD_ABS_LO12_NC, this->text_writer.offset());
+    reloc_text(
+        sym, tpde::elf::R_AARCH64_ADD_ABS_LO12_NC, this->text_writer.offset());
     ASMNC(ADDxi, dst, dst, 0);
   }
 }
@@ -242,8 +197,8 @@ void LLVMCompilerArm64::insert_element(ValueRef &vec_vr,
                                        GenericValuePart el) noexcept {
   tpde::ValueAssignment *va = vec_vr.assignment();
   u32 elem_sz = this->adaptor->basic_ty_part_size(ty);
-  if (elem_sz == va->max_part_size) {
-    // We can't handle the scalarized case better than the generic impl.
+  if (ty == LLVMBasicValType::i1 || elem_sz == va->max_part_size) {
+    // We can't handle the scalarized or i1 case better than the generic impl.
     return LLVMCompilerBase::insert_element(vec_vr, idx, ty, std::move(el));
   }
 
@@ -284,14 +239,7 @@ bool LLVMCompilerArm64::compile_br(const llvm::Instruction *inst,
                                    u64) noexcept {
   const auto *br = llvm::cast<llvm::BranchInst>(inst);
   if (br->isUnconditional()) {
-    auto spilled = this->spill_before_branch();
-    this->begin_branch_region();
-
-    generate_branch_to_block(
-        Jump::jmp, adaptor->block_lookup_idx(br->getSuccessor(0)), false, true);
-
-    this->end_branch_region();
-    release_spilled_regs(spilled);
+    generate_uncond_branch(adaptor->block_lookup_idx(br->getSuccessor(0)));
     return true;
   }
 
@@ -305,37 +253,9 @@ bool LLVMCompilerArm64::compile_br(const llvm::Instruction *inst,
     ASM(TSTwi, cond_reg, 1);
   }
 
-  generate_conditional_branch(Jump::Jne, true_block, false_block);
+  generate_cond_branch(Jump::Jne, true_block, false_block);
 
   return true;
-}
-
-void LLVMCompilerArm64::generate_conditional_branch(
-    Jump jmp, IRBlockRef true_target, IRBlockRef false_target) noexcept {
-  const auto next_block = this->analyzer.block_ref(this->next_block());
-
-  const auto true_needs_split = this->branch_needs_split(true_target);
-  const auto false_needs_split = this->branch_needs_split(false_target);
-
-  const auto spilled = this->spill_before_branch();
-  this->begin_branch_region();
-
-  if (next_block == true_target ||
-      (next_block != false_target && true_needs_split)) {
-    generate_branch_to_block(
-        invert_jump(jmp), false_target, false_needs_split, false);
-    generate_branch_to_block(Jump::jmp, true_target, false, true);
-  } else if (next_block == false_target) {
-    generate_branch_to_block(jmp, true_target, true_needs_split, false);
-    generate_branch_to_block(Jump::jmp, false_target, false, true);
-  } else {
-    assert(!true_needs_split);
-    this->generate_branch_to_block(jmp, true_target, false, false);
-    this->generate_branch_to_block(Jump::jmp, false_target, false, true);
-  }
-
-  this->end_branch_region();
-  this->release_spilled_regs(spilled);
 }
 
 bool LLVMCompilerArm64::compile_inline_asm(
@@ -485,7 +405,7 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
         Jump cbz{jump_kind, lhs_reg, int_width <= 32};
         auto true_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(0));
         auto false_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(1));
-        generate_conditional_branch(cbz, true_block, false_block);
+        generate_cond_branch(cbz, true_block, false_block);
         this->adaptor->inst_set_fused(fuse_br, true);
         return true;
       }
@@ -524,7 +444,7 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
     }
     auto true_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(0));
     auto false_block = adaptor->block_lookup_idx(fuse_br->getSuccessor(1));
-    generate_conditional_branch(jump, true_block, false_block);
+    generate_cond_branch(jump, true_block, false_block);
     this->adaptor->inst_set_fused(fuse_br, true);
   } else if (fuse_ext) {
     auto [_, res_ref] = this->result_ref_single(fuse_ext);
@@ -565,94 +485,6 @@ void LLVMCompilerArm64::compile_i32_cmp_zero(
 LLVMCompilerArm64::GenericValuePart LLVMCompilerArm64::create_addr_for_alloca(
     tpde::AssignmentPartRef ap) noexcept {
   return GenericValuePart::Expr{AsmReg::R29, ap.variable_stack_off()};
-}
-
-void LLVMCompilerArm64::switch_emit_cmp(const AsmReg cmp_reg,
-                                        const AsmReg tmp_reg,
-                                        const u64 case_value,
-                                        const bool width_is_32) noexcept {
-  if (width_is_32) {
-    if (!ASMIF(CMPwi, cmp_reg, case_value)) {
-      materialize_constant(case_value, CompilerConfig::GP_BANK, 4, tmp_reg);
-      ASM(CMPw, cmp_reg, tmp_reg);
-    }
-  } else {
-    if (!ASMIF(CMPxi, cmp_reg, case_value)) {
-      materialize_constant(case_value, CompilerConfig::GP_BANK, 4, tmp_reg);
-      ASM(CMPx, cmp_reg, tmp_reg);
-    }
-  }
-}
-
-void LLVMCompilerArm64::switch_emit_cmpeq(const tpde::Label case_label,
-                                          const AsmReg cmp_reg,
-                                          const AsmReg tmp_reg,
-                                          const u64 case_value,
-                                          const bool width_is_32) noexcept {
-  switch_emit_cmp(cmp_reg, tmp_reg, case_value, width_is_32);
-  generate_raw_jump(Jump::Jeq, case_label);
-}
-
-bool LLVMCompilerArm64::switch_emit_jump_table(tpde::Label default_label,
-                                               std::span<tpde::Label> labels,
-                                               AsmReg cmp_reg,
-                                               AsmReg tmp_reg,
-                                               u64 low_bound,
-                                               u64 high_bound,
-                                               bool width_is_32) noexcept {
-  (void)default_label;
-  (void)labels;
-  (void)cmp_reg;
-  (void)tmp_reg;
-  (void)low_bound;
-  (void)high_bound;
-  (void)width_is_32;
-  // TODO: implement adr/adrp to get address of jump table
-#if 0
-    ScratchReg scratch{this};
-    if (low_bound != 0) {
-        switch_emit_cmp(scratch, cmp_reg, low_bound, width_is_32);
-        generate_raw_jump(Jump::Jcc, default_label);
-    }
-    switch_emit_cmp(scratch, cmp_reg, high_bound, width_is_32);
-    generate_raw_jump(Jump::Jhi, default_label);
-
-    if (width_is_32) {
-        // zero-extend cmp_reg since we use the full width
-        ASM(MOVw, cmp_reg, cmp_reg);
-    }
-
-    if (low_bound != 0 && !ASMIF(CMPxi, cmp_reg, low_bound)) {
-        const auto tmp = scratch.alloc_gp();
-        materialize_constant(low_bound, 0, 4, tmp);
-        ASM(CMPx, cmp_reg, tmp);
-    }
-
-    auto  tmp        = scratch.alloc_gp();
-    tpde::Label jump_table = assembler.label_create();
-    ASM(LEA64rm, tmp, FE_MEM(FE_IP, 0, FE_NOREG, -1));
-    // we reuse the jump offset stuff since the patch procedure is the same
-    assembler.label_add_unresolved_jump_offset(jump_table,
-                                               assembler.text_cur_off() - 4);
-    // load the 4 byte displacement from the jump table
-    ASM(MOVSXr64m32, cmp_reg, FE_MEM(tmp, 4, cmp_reg, 0));
-    ASM(ADD64rr, tmp, cmp_reg);
-    ASM(JMPr, tmp);
-
-    assembler.emit_jump_table(jump_table, labels);
-#endif
-  return false;
-}
-
-void LLVMCompilerArm64::switch_emit_binary_step(
-    const tpde::Label case_label,
-    const tpde::Label gt_label,
-    const AsmReg cmp_reg,
-    const AsmReg tmp_reg,
-    const u64 case_value,
-    const bool width_is_32) noexcept {
-  switch_emit_cmpeq(case_label, cmp_reg, tmp_reg, case_value, width_is_32);
-  generate_raw_jump(Jump::Jhi, gt_label);
 }
 
 void LLVMCompilerArm64::create_helper_call(std::span<IRValueRef> args,
