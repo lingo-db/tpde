@@ -367,6 +367,17 @@ void EncodingTargetArm64::get_inst_candidates(
     std::array<std::string_view, 2> mnems{"LDRSWxr_lsl", "LDRSWxr_sxtx"};
     handle_noimm(mnems[sign], std::format(", {}", shift));
   }
+  if (Name == "LDRHHroX") {
+    unsigned extension = mi.getOperand(3).getImm();
+    unsigned sc = mi.getOperand(4).getImm();
+    std::array<std::string, 4> mnemSuffix{"lsl", "uxtw", "sxtw", "sxtx"};
+
+    if (extension != 0) {
+      assert(0 && "check if the emitted code really uses this suffix (godbolt using the same compilation arguments)");
+    }
+
+    handle_noimm("LDRHr_" + mnemSuffix[extension], std::format(", {}", sc));
+  }
 
   const auto case_mem_signed =
       [&](std::string_view mnem_llvm, std::string_view mnem, bool with_update) {
