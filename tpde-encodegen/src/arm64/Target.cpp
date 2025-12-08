@@ -306,8 +306,12 @@ void EncodingTargetArm64::get_inst_candidates(
   const auto case_mov_shift = [&](std::string_view mnem_llvm,
                                   std::string_view mnem_disarm) {
     if (std::string_view{Name} == mnem_llvm) {
-      unsigned imm = mi.getOperand(1).getImm();
-      unsigned shift = mi.getOperand(2).getImm();
+      int immStartIdx = 1;
+      while (!mi.getOperand(immStartIdx).isImm()) {
+        immStartIdx++;
+      }
+      unsigned imm = mi.getOperand(immStartIdx).getImm();
+      unsigned shift = mi.getOperand(immStartIdx + 1).getImm();
       handle_noimm(mnem_disarm, std::format(", {:#x}, {}", imm, shift / 16));
     }
   };
