@@ -10,23 +10,11 @@ declare void @llvm.prefetch.p0(ptr nocapture readonly, i32 immarg, i32 immarg, i
 
 define void @prefetch_read_local0_inst(ptr %0) {
 ; X64-LABEL: <prefetch_read_local0_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetchnta byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetchnta byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local0_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl1strm, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl1strm, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 0, i32 0)
@@ -35,23 +23,11 @@ define void @prefetch_read_local0_inst(ptr %0) {
 
 define void @prefetch_read_local1_inst(ptr %0) {
 ; X64-LABEL: <prefetch_read_local1_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht2 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht2 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local1_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl3keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl3keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 1, i32 0)
@@ -60,23 +36,11 @@ define void @prefetch_read_local1_inst(ptr %0) {
 
 define void @prefetch_read_local2_inst(ptr %0) {
 ; X64-LABEL: <prefetch_read_local2_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht1 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht1 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local2_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl2keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl2keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 2, i32 0)
@@ -85,23 +49,11 @@ define void @prefetch_read_local2_inst(ptr %0) {
 
 define void @prefetch_read_local3_inst(ptr %0) {
 ; X64-LABEL: <prefetch_read_local3_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht0 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht0 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local3_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl1keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl1keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 3, i32 0)
@@ -110,23 +62,11 @@ define void @prefetch_read_local3_inst(ptr %0) {
 
 define void @prefetch_write_local0_inst(ptr %0) {
 ; X64-LABEL: <prefetch_write_local0_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetchnta byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetchnta byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local0_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl1strm, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl1strm, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 0, i32 0)
@@ -135,23 +75,11 @@ define void @prefetch_write_local0_inst(ptr %0) {
 
 define void @prefetch_write_local1_inst(ptr %0) {
 ; X64-LABEL: <prefetch_write_local1_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht2 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht2 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local1_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl3keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl3keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 1, i32 0)
@@ -160,23 +88,11 @@ define void @prefetch_write_local1_inst(ptr %0) {
 
 define void @prefetch_write_local2_inst(ptr %0) {
 ; X64-LABEL: <prefetch_write_local2_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht1 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht1 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local2_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl2keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl2keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 2, i32 0)
@@ -185,23 +101,11 @@ define void @prefetch_write_local2_inst(ptr %0) {
 
 define void @prefetch_write_local3_inst(ptr %0) {
 ; X64-LABEL: <prefetch_write_local3_inst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht0 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht0 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local3_inst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl1keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl1keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 3, i32 0)
@@ -212,23 +116,11 @@ define void @prefetch_write_local3_inst(ptr %0) {
 
 define void @prefetch_read_local0_data(ptr %0) {
 ; X64-LABEL: <prefetch_read_local0_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetchnta byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetchnta byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local0_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl1strm, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl1strm, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 0, i32 1)
@@ -237,23 +129,11 @@ define void @prefetch_read_local0_data(ptr %0) {
 
 define void @prefetch_read_local1_data(ptr %0) {
 ; X64-LABEL: <prefetch_read_local1_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht2 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht2 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local1_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl3keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl3keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 1, i32 1)
@@ -262,23 +142,11 @@ define void @prefetch_read_local1_data(ptr %0) {
 
 define void @prefetch_read_local2_data(ptr %0) {
 ; X64-LABEL: <prefetch_read_local2_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht1 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht1 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local2_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl2keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl2keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 2, i32 1)
@@ -287,23 +155,11 @@ define void @prefetch_read_local2_data(ptr %0) {
 
 define void @prefetch_read_local3_data(ptr %0) {
 ; X64-LABEL: <prefetch_read_local3_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht0 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht0 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_read_local3_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pldl1keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pldl1keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 0, i32 3, i32 1)
@@ -313,23 +169,11 @@ define void @prefetch_read_local3_data(ptr %0) {
 
 define void @prefetch_write_local0_data(ptr %0) {
 ; X64-LABEL: <prefetch_write_local0_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetchnta byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetchnta byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local0_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl1strm, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl1strm, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 0, i32 1)
@@ -338,23 +182,11 @@ define void @prefetch_write_local0_data(ptr %0) {
 
 define void @prefetch_write_local1_data(ptr %0) {
 ; X64-LABEL: <prefetch_write_local1_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht2 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht2 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local1_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl3keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl3keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 1, i32 1)
@@ -363,23 +195,11 @@ define void @prefetch_write_local1_data(ptr %0) {
 
 define void @prefetch_write_local2_data(ptr %0) {
 ; X64-LABEL: <prefetch_write_local2_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht1 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht1 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local2_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl2keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl2keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 2, i32 1)
@@ -388,23 +208,11 @@ define void @prefetch_write_local2_data(ptr %0) {
 
 define void @prefetch_write_local3_data(ptr %0) {
 ; X64-LABEL: <prefetch_write_local3_data>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    prefetcht0 byte ptr [rdi]
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
+; X64:         prefetcht0 byte ptr [rdi]
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <prefetch_write_local3_data>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    prfm pstl1keep, [x0]
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64:         prfm pstl1keep, [x0]
 ; ARM64-NEXT:    ret
   entry:
     call void @llvm.prefetch.p0(ptr %0, i32 1, i32 3, i32 1)

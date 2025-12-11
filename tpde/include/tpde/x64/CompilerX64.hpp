@@ -11,10 +11,6 @@
 
 #include <bit>
 
-#ifdef TPDE_ASSERTS
-  #include <fadec.h>
-#endif
-
 // Helper macros for assembling in the compiler
 #if defined(ASM) || defined(ASMF) || defined(ASMNC) || defined(ASME)
   #error Got definition for ASM macros from somewhere else. Maybe you included compilers for multiple architectures?
@@ -122,6 +118,7 @@ constexpr static u64 create_bitmask(const std::array<AsmReg, N> regs) {
   return set;
 }
 
+/// x86-64 System V calling convention.
 class CCAssignerSysV : public CCAssigner {
 public:
   static constexpr CCInfo Info{
@@ -150,6 +147,7 @@ public:
           AsmReg::XMM6,
           AsmReg::XMM7,
       }),
+      .red_zone_size = 128,
   };
 
 private:
@@ -198,7 +196,7 @@ public:
         arg.stack_off = stack;
         stack += 8;
       }
-    } else {
+    } else if (arg.bank == RegBank{1}) {
       if (!must_assign_stack && xmm_cnt < 8) {
         arg.reg = Reg{AsmReg::XMM0 + xmm_cnt};
         xmm_cnt += 1;
@@ -211,6 +209,11 @@ public:
         arg.stack_off = stack;
         stack += size;
       }
+    } else {
+      // Argument without valid register bank, pass on stack.
+      stack = util::align_up(stack, arg.align < 8 ? 8 : arg.align);
+      arg.stack_off = stack;
+      stack += util::align_up(arg.size, 8);
     }
 
     if (must_assign_stack > 0) {
@@ -229,21 +232,23 @@ public:
         arg.reg = Reg{ret_gp_cnt == 0 ? AsmReg::AX : AsmReg::DX};
         ret_gp_cnt += 1;
       } else {
-        assert(false);
+        TPDE_UNREACHABLE("too many return values");
       }
-    } else {
+    } else if (arg.bank == RegBank{1}) {
       if (ret_xmm_cnt + arg.consecutive < 2) {
         arg.reg = Reg{ret_xmm_cnt == 0 ? AsmReg::XMM0 : AsmReg::XMM1};
         ret_xmm_cnt += 1;
       } else {
-        assert(false);
+        TPDE_UNREACHABLE("too many return values");
       }
+    } else {
+      TPDE_UNREACHABLE("return value must have valid register bank");
     }
   }
 };
 
 struct PlatformConfig : CompilerConfigDefault {
-  using Assembler = AssemblerElfX64;
+  using Assembler = tpde::elf::AssemblerElfX64;
   using AsmReg = tpde::x64::AsmReg;
   using DefaultCCAssigner = CCAssignerSysV;
   using FunctionWriter = FunctionWriterX64;
@@ -255,19 +260,7 @@ struct PlatformConfig : CompilerConfigDefault {
   static constexpr u32 NUM_BANKS = 2;
 };
 
-namespace concepts {
-template <typename T, typename Config>
-concept Compiler = tpde::Compiler<T, Config> && requires(T a) {
-  {
-    a.arg_is_int128(std::declval<typename T::IRValueRef>())
-  } -> std::convertible_to<bool>;
-
-  {
-    a.arg_allow_split_reg_stack_passing(std::declval<typename T::IRValueRef>())
-  } -> std::convertible_to<bool>;
-};
-} // namespace concepts
-
+/// Compiler mixin for targeting x86-64.
 template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy =
@@ -285,7 +278,6 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
   using ValuePart = typename Base::ValuePart;
   using GenericValuePart = typename Base::GenericValuePart;
 
-  using Assembler = typename PlatformConfig::Assembler;
   using RegisterFile = typename Base::RegisterFile;
 
   using CallArg = typename Base::CallArg;
@@ -339,26 +331,33 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
   // since they are clobbered there
   u64 fixed_assignment_nonallocatable_mask =
       create_bitmask({AsmReg::AX, AsmReg::DX, AsmReg::CX});
-  u32 func_start_off = 0u, func_reg_save_off = 0u, func_reg_save_alloc = 0u,
-      func_reg_restore_alloc = 0u;
-  /// Offset to the `sub rsp, XXX` instruction that sets up the frame
-  u32 frame_size_setup_offset = 0u;
+  u32 func_start_off = 0u, func_prologue_alloc = 0u;
   /// For vararg functions only: number of scalar and xmm registers used.
   // TODO: this information should be obtained from the CCAssigner.
   u32 scalar_arg_count = 0xFFFF'FFFF, vec_arg_count = 0xFFFF'FFFF;
   u32 reg_save_frame_off = 0;
   u32 var_arg_stack_off = 0;
   util::SmallVector<u32, 8> func_ret_offs = {};
+  /// For functions without dynamic allocas, the largest size used for arguments
+  /// passed on the stack to callees. This size is added to the stack pointer
+  /// subtraction/addition in prologue/epilogue to avoid stack pointer
+  /// adjustments at call sites.
+  u32 max_callee_stack_arg_size;
+
+  /// Whether flags must be preserved when materializing constants etc.
+  bool preserve_flags;
 
   /// Symbol for __tls_get_addr.
   SymRef sym_tls_get_addr;
 
+  /// Helper class for building call sequences.
   class CallBuilder : public Base::template CallBuilderBase<CallBuilder> {
     u32 stack_adjust_off = 0;
 
     void set_stack_used() noexcept;
 
   public:
+    /// Constructor.
     CallBuilder(Derived &compiler, CCAssigner &assigner) noexcept
         : Base::template CallBuilderBase<CallBuilder>(compiler, assigner) {}
 
@@ -373,7 +372,6 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
                        const CPU_FEATURES cpu_features = CPU_BASELINE)
       : Base{adaptor}, cpu_feats(cpu_features) {
     static_assert(std::is_base_of_v<CompilerX64, Derived>);
-    static_assert(concepts::Compiler<Derived, PlatformConfig>);
   }
 
   template <typename... Args>
@@ -395,7 +393,14 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
 
   void start_func(u32 func_idx) noexcept;
 
-  void gen_func_prolog_and_args(CCAssigner *) noexcept;
+  /// Begin prologue, prepare for assigning arguments.
+  void prologue_begin(CCAssigner *cc_assigner) noexcept;
+  /// Assign argument part. Returns the stack offset if the value should be
+  /// initialized as stack variable.
+  std::optional<i32> prologue_assign_arg_part(ValuePart &&vp,
+                                              CCAssignment cca) noexcept;
+  /// Finish prologue.
+  void prologue_end(CCAssigner *cc_assigner) noexcept;
 
   void finish_func(u32 func_idx) noexcept;
 
@@ -404,6 +409,9 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
   // helpers
 
   void gen_func_epilog() noexcept;
+
+  void set_preserve_flags(bool preserve) noexcept { preserve_flags = preserve; }
+  bool may_clobber_flags() noexcept { return !preserve_flags; }
 
   void
       spill_reg(const AsmReg reg, const i32 frame_off, const u32 size) noexcept;
@@ -434,6 +442,7 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
                       u32 align,
                       ValuePart &res) noexcept;
 
+  /// Materialize constant into a register.
   void materialize_constant(const u64 *data,
                             RegBank bank,
                             u32 size,
@@ -467,11 +476,7 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
 
   FeCond jump_to_cond(Jump jmp) noexcept;
 
-  void generate_branch_to_block(Jump jmp,
-                                IRBlockRef target,
-                                bool needs_split,
-                                bool last_inst) noexcept;
-
+  /// Generate jump instruction to target label.
   void generate_raw_jump(Jump jmp, Label target) noexcept;
 
   /// Set dst to 1 if cc is true, otherwise set it to zero. If zext is false,
@@ -482,8 +487,16 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
   /// Move src into dst if cc is true, otherwise do nothing
   void generate_raw_cmov(Jump cc, AsmReg dst, AsmReg src, bool is_64) noexcept;
 
+  /// Integer extension. Might need a temporary register, src is not modified,
+  /// might clobber flags.
   void generate_raw_intext(
       AsmReg dst, AsmReg src, bool sign, u32 from, u32 to) noexcept;
+
+  /// Bitfield insert. Needs a temporary register, src is not modified.
+  void generate_raw_bfi(AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept;
+  /// Bitfield insert in zero. src is not modified, but src and dst must be
+  /// different.
+  void generate_raw_bfiz(AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept;
 
   /// Generate a function call
   ///
@@ -500,6 +513,36 @@ struct CompilerX64 : BaseTy<Adaptor, Derived, Config> {
                      typename Base::ValueRef *result,
                      bool variable_args = false);
 
+private:
+  /// @internal Emit compare of cmp_reg with case_value.
+  void switch_emit_cmp(AsmReg cmp_reg,
+                       AsmReg tmp_reg,
+                       u64 case_value,
+                       bool width_is_32) noexcept;
+
+public:
+  /// @internal Jump if cmp_reg equals case_value.
+  void switch_emit_cmpeq(Label case_label,
+                         AsmReg cmp_reg,
+                         AsmReg tmp_reg,
+                         u64 case_value,
+                         bool width_is_32) noexcept;
+  /// @internal Emit bounds check and jump table.
+  bool switch_emit_jump_table(Label default_label,
+                              std::span<const Label> labels,
+                              AsmReg cmp_reg,
+                              AsmReg tmp_reg,
+                              u64 low_bound,
+                              u64 high_bound,
+                              bool width_is_32) noexcept;
+  /// @internal Jump if cmp_reg is greater than case_value.
+  void switch_emit_binary_step(Label case_label,
+                               Label gt_label,
+                               AsmReg cmp_reg,
+                               AsmReg tmp_reg,
+                               u64 case_value,
+                               bool width_is_32) noexcept;
+
   /// Generate code sequence to load address of sym into a register. This will
   /// generate a function call for dynamic TLS access models.
   ScratchReg tls_get_addr(SymRef sym, TLSModel model) noexcept;
@@ -515,41 +558,20 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::start_func(
     const u32 /*func_idx*/) noexcept {
-  this->text_writer.align(16);
-  this->assembler.except_begin_func();
+  this->preserve_flags = false;
 }
 
 template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
-void CompilerX64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::prologue_begin(
     CCAssigner *cc_assigner) noexcept {
-  // prologue:
-  // push rbp
-  // mov rbp, rsp
-  // optionally create vararg save-area
-  // reserve space for callee-saved regs
-  //   = 1 byte for each of the lower 8 regs and 2
-  //   bytes for the higher 8 regs
-  // sub rsp, #<frame_size>+<largest_call_frame_usage>
-
-  // TODO(ts): technically we only need rbp if there
-  // is a dynamic alloca but then we need to make the
-  // frame indexing dynamic in CompilerBase and the
-  // unwind info needs to take the dynamic sub rsp for
-  // calls into account
-
   func_ret_offs.clear();
   func_start_off = this->text_writer.offset();
   scalar_arg_count = vec_arg_count = 0xFFFF'FFFF;
 
   const CCInfo &cc_info = cc_assigner->get_ccinfo();
-
-  ASM(PUSHr, FE_BP);
-  ASM(MOV64rr, FE_BP, FE_SP);
-
-  func_reg_save_off = this->text_writer.offset();
 
   auto csr = cc_info.callee_saved_regs;
   assert(!(csr & ~this->register_file.bank_regs(Config::GP_BANK)) &&
@@ -557,26 +579,20 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
 
   u32 csr_logp = std::popcount((csr >> AsmReg::AX) & 0xff);
   u32 csr_higp = std::popcount((csr >> AsmReg::R8) & 0xff);
-  // R8 and higher need a REX prefix.
+  // R8 and higher need a REX prefix
   u32 reg_save_size = 1 * csr_logp + 2 * csr_higp;
   this->stack.frame_size = 8 * (csr_logp + csr_higp);
+  max_callee_stack_arg_size = 0;
 
-  this->text_writer.ensure_space(reg_save_size);
-  this->text_writer.cur_ptr() += reg_save_size;
-  func_reg_save_alloc = reg_save_size;
-  // pop uses the same amount of bytes as push
-  func_reg_restore_alloc = reg_save_size;
+  // 11 bytes for push rbp/mov rbp, rsp/sub rsp
+  func_prologue_alloc = reg_save_size + 11;
+  this->text_writer.ensure_space(func_prologue_alloc);
+  this->text_writer.cur_ptr() += func_prologue_alloc;
 
   // TODO(ts): support larger stack alignments?
 
-  // placeholder for later
-  frame_size_setup_offset = this->text_writer.offset();
-  ASM(SUB64ri, FE_SP, 0x7FFF'FFFF);
-#ifdef TPDE_ASSERTS
-  assert((this->text_writer.offset() - frame_size_setup_offset) == 7);
-#endif
-
   if (this->adaptor->cur_is_vararg()) {
+    this->stack.frame_used = true;
     this->stack.frame_size += 6 * 8 + 8 * 16;
     reg_save_frame_off = this->stack.frame_size;
     auto mem = FE_MEM(FE_BP, 0, FE_NOREG, -(i32)reg_save_frame_off);
@@ -612,58 +628,58 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
     ASM(SSE_MOVDQUmr, mem, FE_XMM7);
     this->label_place(skip_fp);
   }
+}
 
-  // Temporarily prevent argument registers from being assigned.
-  assert((cc_info.allocatable_regs & cc_info.arg_regs) == cc_info.arg_regs &&
-         "argument registers must also be allocatable");
-  this->register_file.allocatable &= ~cc_info.arg_regs;
-
-  u32 arg_idx = 0;
-  for (const IRValueRef arg : this->adaptor->cur_args()) {
-    derived()->handle_func_arg(
-        arg_idx,
-        arg,
-        [&](ValuePart &&vp, CCAssignment cca) -> std::optional<i32> {
-          if (!cca.byval) {
-            cca.bank = vp.bank();
-            cca.size = vp.part_size();
-          }
-
-          cc_assigner->assign_arg(cca);
-
-          if (cca.reg.valid()) [[likely]] {
-            vp.set_value_reg(this, cca.reg);
-            // Mark register as allocatable as soon as it is assigned. If the
-            // argument is unused, the register will be freed immediately and
-            // can be used for later stack arguments.
-            this->register_file.allocatable |= u64{1} << cca.reg.id();
-            return {};
-          }
-
-          if (vp.is_owned()) {
-            // no need to handle unused arguments
-            return {};
-          }
-
-          if (cca.byval) {
-            // Return byval frame_off.
-            return 0x10 + cca.stack_off;
-          } else {
-            //  TODO(ts): maybe allow negative frame offsets for value
-            //  assignments so we can simply reference this?
-            //  but this probably doesn't work with multi-part values
-            //  since the offsets are different
-            AsmReg dst = vp.alloc_reg(this);
-            this->load_from_stack(dst, 0x10 + cca.stack_off, cca.size);
-          }
-          return {};
-        });
-
-    arg_idx += 1;
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+std::optional<i32>
+    CompilerX64<Adaptor, Derived, BaseTy, Config>::prologue_assign_arg_part(
+        ValuePart &&vp, CCAssignment cca) noexcept {
+  if (cca.reg.valid()) [[likely]] {
+    vp.set_value_reg(this, cca.reg);
+    // Mark register as allocatable as soon as it is assigned. If the argument
+    // is unused, the register will be freed immediately and can be used for
+    // later stack arguments.
+    this->register_file.allocatable |= u64{1} << cca.reg.id();
+    return {};
   }
 
+  if (vp.is_owned()) {
+    // No need to handle unused arguments.
+    return {};
+  }
+
+  this->stack.frame_used = true;
+  i32 frame_off = 0x10 + cca.stack_off;
+  if (cca.byval) {
+    return frame_off; // Return byval frame_off.
+  } else if (vp.assignment().assignment()->part_count == 1 &&
+             !vp.assignment().register_valid()) {
+    // For single-part values, the in-memory layout is equal to our
+    // layout in the spill slot. Reuse argument area as spill slot.
+    // However, don't do this for fixed assignments (indicated by
+    // register_valid()).
+    // TODO: consider doing this for two-part values when possible.
+    vp.assignment().set_stack_valid();
+    vp.assignment().assignment()->frame_off = frame_off;
+  } else {
+    AsmReg dst = vp.alloc_reg(this);
+    this->load_from_stack(dst, frame_off, cca.size);
+  }
+  return {};
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::prologue_end(
+    CCAssigner *cc_assigner) noexcept {
   if (this->adaptor->cur_is_vararg()) [[unlikely]] {
     // TODO: get this from CCAssigner?
+    const CCInfo &cc_info = cc_assigner->get_ccinfo();
     auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
     u64 gp_regs = arg_regs & this->register_file.bank_regs(Config::GP_BANK);
     u64 xmm_regs = arg_regs & this->register_file.bank_regs(Config::FP_BANK);
@@ -671,8 +687,6 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::gen_func_prolog_and_args(
     this->vec_arg_count = std::popcount(xmm_regs);
     this->var_arg_stack_off = 0x10 + cc_assigner->get_stack_size();
   }
-
-  this->register_file.allocatable |= cc_info.arg_regs;
 }
 
 template <IRAdaptor Adaptor,
@@ -681,162 +695,156 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::finish_func(
     u32 func_idx) noexcept {
-  // NB: code alignment factor 1, data alignment factor -8.
-  auto fde_off = this->assembler.eh_begin_fde(this->get_personality_sym());
-  // push rbp
-  this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 1);
-  this->assembler.eh_write_inst(dwarf::DW_CFA_def_cfa_offset, 16);
-  this->assembler.eh_write_inst(
-      dwarf::DW_CFA_offset, dwarf::x64::DW_reg_rbp, 2);
-  // mov rbp, rsp
-  this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 3);
-  this->assembler.eh_write_inst(dwarf::DW_CFA_def_cfa_register,
-                                dwarf::x64::DW_reg_rbp);
-
-  // Patched below
-  auto fde_prologue_adv_off = this->assembler.eh_writer.size();
-  this->assembler.eh_write_inst(dwarf::DW_CFA_advance_loc, 0);
-
-  auto *write_ptr = this->text_writer.begin_ptr() + func_reg_save_off;
-  auto csr = derived()->cur_cc_assigner()->get_ccinfo().callee_saved_regs;
+  const CCInfo &ccinfo = derived()->cur_cc_assigner()->get_ccinfo();
+  auto csr = ccinfo.callee_saved_regs;
   u64 saved_regs = this->register_file.clobbered & csr;
-  u32 num_saved_regs = 0u;
-  for (auto reg : util::BitSetIterator{saved_regs}) {
-    assert(reg <= AsmReg::R15);
-    write_ptr +=
-        fe64_PUSHr(write_ptr, 0, AsmReg{static_cast<AsmReg::REG>(reg)});
-    ++num_saved_regs;
 
-    // DWARF register ordering is subtly different from the encoding:
-    // x86 is:   ax, cx, dx, bx, sp, bp, si, di, r8, ...
-    // DWARF is: ax, dx, cx, bx, si, di, bp, sp, r8, ...
-    static const u8 gpreg_to_dwarf[] = {
-        dwarf::x64::DW_reg_rax,
-        dwarf::x64::DW_reg_rcx,
-        dwarf::x64::DW_reg_rdx,
-        dwarf::x64::DW_reg_rbx,
-        dwarf::x64::DW_reg_rsp,
-        dwarf::x64::DW_reg_rbp,
-        dwarf::x64::DW_reg_rsi,
-        dwarf::x64::DW_reg_rdi,
-        dwarf::x64::DW_reg_r8,
-        dwarf::x64::DW_reg_r9,
-        dwarf::x64::DW_reg_r10,
-        dwarf::x64::DW_reg_r11,
-        dwarf::x64::DW_reg_r12,
-        dwarf::x64::DW_reg_r13,
-        dwarf::x64::DW_reg_r14,
-        dwarf::x64::DW_reg_r15,
-    };
-    u8 dwarf_reg = gpreg_to_dwarf[reg];
-    auto cfa_off = num_saved_regs + 2;
-    this->assembler.eh_write_inst(dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
-  }
+  bool needs_stack_frame = this->stack.frame_used ||
+                           this->stack.generated_call ||
+                           this->stack.has_dynamic_alloca || saved_regs != 0;
 
-  u32 prologue_size =
-      write_ptr - (this->text_writer.begin_ptr() + func_start_off);
-  assert(prologue_size < 0x44);
-  this->assembler.eh_writer.data()[fde_prologue_adv_off] =
-      dwarf::DW_CFA_advance_loc | (prologue_size - 4);
+  u32 prologue_size = 0;
+  u32 num_saved_regs = 0;
+  u32 rsp_adjustment = 0;
 
-  // The frame_size contains the reserved frame size so we need to subtract
-  // the stack space we used for the saved registers
-  const auto final_frame_size =
-      util::align_up(this->stack.frame_size, 16) - num_saved_regs * 8;
-  *reinterpret_cast<u32 *>(this->text_writer.begin_ptr() +
-                           frame_size_setup_offset + 3) = final_frame_size;
-#ifdef TPDE_ASSERTS
-  FdInstr instr = {};
-  assert(fd_decode(this->text_writer.begin_ptr() + frame_size_setup_offset,
-                   7,
-                   64,
-                   0,
-                   &instr) == 7);
-  assert(FD_TYPE(&instr) == FDI_SUB);
-  assert(FD_OP_TYPE(&instr, 0) == FD_OT_REG);
-  assert(FD_OP_TYPE(&instr, 1) == FD_OT_IMM);
-  assert(FD_OP_SIZE(&instr, 0) == 8);
-  assert(FD_OP_SIZE(&instr, 1) == 8);
-  assert(FD_OP_IMM(&instr, 1) == final_frame_size);
-#endif
+  // NB: code alignment factor 1, data alignment factor -8.
+  this->text_writer.eh_begin_fde(this->get_personality_sym());
 
-  // nop out the rest
-  const auto reg_save_end =
-      this->text_writer.begin_ptr() + func_reg_save_off + func_reg_save_alloc;
-  assert(reg_save_end >= write_ptr);
-  const u32 nop_len = reg_save_end - write_ptr;
-  if (nop_len) {
-    fe64_NOP(write_ptr, nop_len);
-  }
-
-  auto func_sym = this->func_syms[func_idx];
-  auto func_sec = this->text_writer.get_sec_ref();
-  if (func_ret_offs.empty()) {
-    // TODO(ts): honor cur_needs_unwind_info
-    auto func_size = this->text_writer.offset() - func_start_off;
-    this->assembler.sym_def(func_sym, func_sec, func_start_off, func_size);
-    this->assembler.eh_end_fde(fde_off, func_sym);
-    this->assembler.except_encode_func(func_sym,
-                                       this->text_writer.label_offsets.data());
-    return;
-  }
-
-  auto *text_data = this->text_writer.begin_ptr();
-  u32 first_ret_off = func_ret_offs[0];
-  u32 ret_size = 0;
-  u32 epilogue_size = 7 + 1 + 1 + func_reg_restore_alloc; // add + pop + ret
-  u32 func_end_ret_off = this->text_writer.offset() - epilogue_size;
-  {
-    write_ptr = text_data + first_ret_off;
-    const auto ret_start = write_ptr;
-    if (this->adaptor->cur_has_dynamic_alloca()) {
-      if (num_saved_regs == 0) {
-        write_ptr += fe64_MOV64rr(write_ptr, 0, FE_SP, FE_BP);
-      } else {
-        write_ptr +=
-            fe64_LEA64rm(write_ptr,
-                         0,
-                         FE_SP,
-                         FE_MEM(FE_BP, 0, FE_NOREG, -(i32)num_saved_regs * 8));
-      }
-    } else {
-      write_ptr += fe64_ADD64ri(write_ptr, 0, FE_SP, final_frame_size);
+  if (needs_stack_frame) {
+    if (!func_ret_offs.empty()) {
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_remember_state);
     }
-    for (auto reg : util::BitSetIterator<true>{saved_regs}) {
+    // push rbp
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 1);
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_def_cfa_offset, 16);
+    this->text_writer.eh_write_inst(
+        dwarf::DW_CFA_offset, dwarf::x64::DW_reg_rbp, 2);
+    // mov rbp, rsp
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 3);
+    this->text_writer.eh_write_inst(dwarf::DW_CFA_def_cfa_register,
+                                    dwarf::x64::DW_reg_rbp);
+
+    // Patched below
+    auto fde_prologue_adv_off = this->text_writer.eh_writer.size();
+    if (saved_regs != 0) {
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_advance_loc, 0);
+    }
+
+    auto *write_ptr = this->text_writer.begin_ptr() + func_start_off;
+    write_ptr += fe64_PUSHr(write_ptr, 0, FE_BP);
+    write_ptr += fe64_MOV64rr(write_ptr, 0, FE_BP, FE_SP);
+    for (auto reg : util::BitSetIterator{saved_regs}) {
       assert(reg <= AsmReg::R15);
       write_ptr +=
-          fe64_POPr(write_ptr, 0, AsmReg{static_cast<AsmReg::REG>(reg)});
-    }
-    write_ptr += fe64_POPr(write_ptr, 0, FE_BP);
-    write_ptr += fe64_RET(write_ptr, 0);
-    ret_size = write_ptr - ret_start;
-    assert(ret_size <= epilogue_size && "function epilogue too long");
+          fe64_PUSHr(write_ptr, 0, AsmReg{static_cast<AsmReg::REG>(reg)});
+      ++num_saved_regs;
 
-    // write NOP for better disassembly
-    if (epilogue_size > ret_size) {
-      fe64_NOP(write_ptr, epilogue_size - ret_size);
-      if (first_ret_off == func_end_ret_off) {
-        this->text_writer.cur_ptr() -= epilogue_size - ret_size;
-      }
+      // DWARF register ordering is subtly different from the encoding:
+      // x86 is:   ax, cx, dx, bx, sp, bp, si, di, r8, ...
+      // DWARF is: ax, dx, cx, bx, si, di, bp, sp, r8, ...
+      static const u8 gpreg_to_dwarf[] = {
+          dwarf::x64::DW_reg_rax,
+          dwarf::x64::DW_reg_rcx,
+          dwarf::x64::DW_reg_rdx,
+          dwarf::x64::DW_reg_rbx,
+          dwarf::x64::DW_reg_rsp,
+          dwarf::x64::DW_reg_rbp,
+          dwarf::x64::DW_reg_rsi,
+          dwarf::x64::DW_reg_rdi,
+          dwarf::x64::DW_reg_r8,
+          dwarf::x64::DW_reg_r9,
+          dwarf::x64::DW_reg_r10,
+          dwarf::x64::DW_reg_r11,
+          dwarf::x64::DW_reg_r12,
+          dwarf::x64::DW_reg_r13,
+          dwarf::x64::DW_reg_r14,
+          dwarf::x64::DW_reg_r15,
+      };
+      u8 dwarf_reg = gpreg_to_dwarf[reg];
+      auto cfa_off = num_saved_regs + 2;
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
+    }
+
+    assert(
+        (!this->stack.has_dynamic_alloca || max_callee_stack_arg_size == 0) &&
+        "stack with dynamic alloca must adjust stack pointer at call sites");
+    // The frame_size contains the reserved frame size so we need to subtract
+    // the stack space we used for the saved registers
+    u32 final_frame_size =
+        util::align_up(this->stack.frame_size + max_callee_stack_arg_size, 16);
+    rsp_adjustment = final_frame_size - num_saved_regs * 8;
+    bool needs_rsp_adjustment = this->stack.generated_call ||
+                                this->stack.has_dynamic_alloca ||
+                                rsp_adjustment > ccinfo.red_zone_size;
+
+    if (needs_rsp_adjustment) {
+      write_ptr += fe64_SUB64ri(write_ptr, 0, FE_SP, rsp_adjustment);
+    } else {
+      rsp_adjustment = 0;
+    }
+
+    prologue_size =
+        write_ptr - (this->text_writer.begin_ptr() + func_start_off);
+    assert(prologue_size <= func_prologue_alloc);
+    if (saved_regs != 0) {
+      assert(prologue_size < 0x44 && "cannot encode too large prologue in CFI");
+      this->text_writer.eh_writer.data()[fde_prologue_adv_off] =
+          dwarf::DW_CFA_advance_loc | (prologue_size - 4);
     }
   }
 
-  for (u32 i = 1; i < func_ret_offs.size(); ++i) {
-    std::memcpy(
-        text_data + func_ret_offs[i], text_data + first_ret_off, epilogue_size);
-    if (func_ret_offs[i] == func_end_ret_off) {
-      this->text_writer.cur_ptr() -= epilogue_size - ret_size;
+  if (!func_ret_offs.empty()) {
+    u8 *text_data = this->text_writer.begin_ptr();
+    if (func_ret_offs.back() == this->text_writer.offset() - 5) {
+      this->text_writer.cur_ptr() -= 5;
+      func_ret_offs.pop_back();
     }
+    for (auto ret_off : func_ret_offs) {
+      fe64_JMP(text_data + ret_off, FE_JMPL, this->text_writer.cur_ptr());
+    }
+
+    // Epilogue mirrors prologue (POP has the same size, ADD/LEA/MOV is not
+    // larger than SUB), but RET is 2B shorter than MOV RSP,RBP. However,
+    // prologue_size might be zero; for simplicity, over-allocate a few bytes.
+    this->text_writer.ensure_space(prologue_size + 1);
+    if (needs_stack_frame) {
+      if (this->stack.has_dynamic_alloca) {
+        if (num_saved_regs == 0) {
+          ASMNC(MOV64rr, FE_SP, FE_BP);
+        } else {
+          i32 reg_save_size = num_saved_regs * 8;
+          ASMNC(LEA64rm, FE_SP, FE_MEM(FE_BP, 0, FE_NOREG, -reg_save_size));
+        }
+      } else if (rsp_adjustment != 0) {
+        ASMNC(ADD64ri, FE_SP, rsp_adjustment);
+      }
+      // TODO: if the calling convention doesn't guarantee a red zone, we must
+      // emit a CFA_restore for every single pop instruction.
+      assert(ccinfo.red_zone_size >= num_saved_regs * 8 &&
+             "unwind info incorrect for calling conv without red zone");
+      for (auto reg : util::BitSetIterator<true>{saved_regs}) {
+        ASMNC(POPr, AsmReg(reg));
+      }
+      ASMNC(POPr, FE_BP);
+
+      u32 body_start = func_start_off + func_prologue_alloc;
+      this->text_writer.eh_advance(this->text_writer.offset() - body_start);
+      this->text_writer.eh_write_inst(dwarf::DW_CFA_restore_state);
+    }
+    ASMNC(RET);
   }
 
   // Do sym_def at the very end; we shorten the function here again, so only at
   // this point we know the actual size of the function.
   // TODO(ts): honor cur_needs_unwind_info
+  this->text_writer.remove_prologue_bytes(func_start_off + prologue_size,
+                                          func_prologue_alloc - prologue_size);
   auto func_size = this->text_writer.offset() - func_start_off;
+  auto func_sym = this->func_syms[func_idx];
+  auto func_sec = this->text_writer.get_sec_ref();
   this->assembler.sym_def(func_sym, func_sec, func_start_off, func_size);
-  this->assembler.eh_end_fde(fde_off, func_sym);
-  this->assembler.except_encode_func(func_sym,
-                                     this->text_writer.label_offsets.data());
+  this->text_writer.eh_end_fde();
+  this->text_writer.except_encode_func();
 }
 
 template <IRAdaptor Adaptor,
@@ -854,31 +862,10 @@ template <IRAdaptor Adaptor,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::gen_func_epilog() noexcept {
-  // epilogue:
-  // if !func_has_dynamic_alloca:
-  //   add rsp, #<frame_size>+<largest_call_frame_usage>
-  // else:
-  //   lea rsp, [rbp - <size_of_reg_save_area>]
-  // for each saved reg:
-  //   pop <reg>
-  // pop rbp
-  // ret
-  //
-  // however, since we will later patch this, we only
-  // reserve the space for now
-
+  // Patched at the end, just reserve the space here.
   func_ret_offs.push_back(this->text_writer.offset());
-
-  // add reg, imm32
-  // and
-  // lea rsp, [rbp - imm32]
-  // both take 7 bytes
-  u32 epilogue_size =
-      7 + 1 + 1 +
-      func_reg_restore_alloc; // add/lea + pop + ret + size of reg restore
-
-  this->text_writer.ensure_space(epilogue_size);
-  this->text_writer.cur_ptr() += epilogue_size;
+  this->text_writer.ensure_space(5); // JMP is 5 bytes
+  this->text_writer.cur_ptr() += 5;
 }
 
 template <IRAdaptor Adaptor,
@@ -887,6 +874,7 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::spill_reg(
     const AsmReg reg, const i32 frame_off, const u32 size) noexcept {
+  assert(this->stack.frame_used);
   this->text_writer.ensure_space(16);
   assert(frame_off < 0);
   const auto mem = FE_MEM(FE_BP, 0, FE_NOREG, frame_off);
@@ -918,6 +906,7 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::load_from_stack(
     const i32 frame_off,
     const u32 size,
     const bool sign_extend) noexcept {
+  assert(this->stack.frame_used);
   this->text_writer.ensure_space(16);
   const auto mem = FE_MEM(FE_BP, 0, FE_NOREG, frame_off);
 
@@ -958,6 +947,7 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::load_address_of_stack_var(
     const AsmReg dst, const AssignmentPartRef ap) noexcept {
+  assert(this->stack.frame_used);
   ASM(LEA64rm, dst, FE_MEM(FE_BP, 0, FE_NOREG, ap.variable_stack_off()));
 }
 
@@ -1068,6 +1058,7 @@ AsmReg CompilerX64<Adaptor, Derived, BaseTy, Config>::gval_expr_as_reg(
         ASM(LEA64rm, dst, FE_MEM(FE_NOREG, sc, idx, 0));
       }
     } else {
+      assert(may_clobber_flags());
       u64 scale = expr.scale;
       if (base == idx) {
         base = AsmReg::make_invalid();
@@ -1126,7 +1117,11 @@ AsmReg CompilerX64<Adaptor, Derived, BaseTy, Config>::gval_expr_as_reg(
     ScratchReg scratch2{derived()};
     auto tmp2 = scratch2.alloc_gp();
     ASM(MOV64ri, tmp2, expr.disp);
-    ASM(ADD64rr, dst, tmp2);
+    if (may_clobber_flags()) {
+      ASM(ADD64rr, dst, tmp2);
+    } else {
+      ASM(LEA64rm, dst, FE_MEM(dst, 1, tmp2, 0));
+    }
   }
   gv.state = std::move(scratch);
   return dst;
@@ -1138,7 +1133,10 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::alloca_fixed(
     u64 size, u32 align, ValuePart &res) noexcept {
+  assert(this->stack.has_dynamic_alloca &&
+         "function marked as not having dynamic allocas can't have alloca");
   assert(align != 0 && (align & (align - 1)) == 0 && "invalid alignment");
+  assert(may_clobber_flags());
   size = tpde::util::align_up(size, 16);
   if (size > 0) {
     assert(size < 0x8000'0000);
@@ -1157,7 +1155,10 @@ template <IRAdaptor Adaptor,
           typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::alloca_dynamic(
     u64 elem_size, ValuePart &&count, u32 align, ValuePart &res) noexcept {
+  assert(this->stack.has_dynamic_alloca &&
+         "function marked as not having dynamic allocas can't have alloca");
   assert(align != 0 && (align & (align - 1)) == 0 && "invalid alignment");
+  assert(may_clobber_flags());
   AsmReg size_reg = count.has_reg() ? count.cur_reg() : count.load_to_reg(this);
   AsmReg res_reg = res.alloc_try_reuse(this, count);
 
@@ -1211,10 +1212,11 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::materialize_constant(
   if (bank == Config::GP_BANK) {
     assert(size <= 8);
     if (const_u64 == 0) {
-      // note: cannot use XOR here since this might be called in-between
-      // instructions that rely on the flags being preserved
-      // ASM(XOR32rr, dst, dst);
-      ASM(MOV32ri, dst, 0);
+      if (may_clobber_flags()) {
+        ASM(XOR32rr, dst, dst);
+      } else {
+        ASM(MOV32ri, dst, 0);
+      }
       return;
     }
 
@@ -1302,7 +1304,7 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::materialize_constant(
     TPDE_FATAL("unable to materialize constant");
   }
 
-  this->reloc_text(sym, R_X86_64_PC32, this->text_writer.offset() - 4, -4);
+  this->reloc_text(sym, elf::R_X86_64_PC32, this->text_writer.offset() - 4, -4);
 }
 
 template <IRAdaptor Adaptor,
@@ -1326,7 +1328,7 @@ AsmReg
 
   u64 possible_regs;
   auto csr = derived()->cur_cc_assigner()->get_ccinfo().callee_saved_regs;
-  if (derived()->cur_func_may_emit_calls()) {
+  if (!this->stack.is_leaf_function) {
     // we can only allocated fixed assignments from the callee-saved regs
     possible_regs = find_possible_regs(csr);
   } else {
@@ -1457,34 +1459,6 @@ template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
-void CompilerX64<Adaptor, Derived, BaseTy, Config>::generate_branch_to_block(
-    const Jump jmp,
-    IRBlockRef target,
-    const bool needs_split,
-    const bool last_inst) noexcept {
-  const auto target_idx = this->analyzer.block_idx(target);
-  if (!needs_split || jmp == Jump::jmp) {
-    this->derived()->move_to_phi_nodes(target_idx);
-
-    if (!last_inst || this->analyzer.block_idx(target) != this->next_block()) {
-      generate_raw_jump(jmp, this->block_labels[(u32)target_idx]);
-    }
-  } else {
-    auto tmp_label = this->text_writer.label_create();
-    generate_raw_jump(invert_jump(jmp), tmp_label);
-
-    this->derived()->move_to_phi_nodes(target_idx);
-
-    generate_raw_jump(Jump::jmp, this->block_labels[(u32)target_idx]);
-
-    this->label_place(tmp_label);
-  }
-}
-
-template <IRAdaptor Adaptor,
-          typename Derived,
-          template <typename, typename, typename> typename BaseTy,
-          typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::generate_raw_jump(
     Jump jmp, Label target_label) noexcept {
   this->text_writer.ensure_space(6); // For safe ptr arithmetic on code buffer.
@@ -1550,6 +1524,7 @@ template <IRAdaptor Adaptor,
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::generate_raw_intext(
     AsmReg dst, AsmReg src, bool sign, u32 from, u32 to) noexcept {
   assert(from < to && to <= 64);
+  assert(may_clobber_flags());
   if (!sign) {
     switch (from) {
     case 8: ASM(MOVZXr32r8, dst, src); break;
@@ -1601,9 +1576,86 @@ template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> class BaseTy,
           typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::generate_raw_bfi(
+    AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept {
+  assert(lsb < 63 && width < 64 && lsb + width <= 64 && width != 0);
+  assert(may_clobber_flags());
+  ScratchReg tmp1{this};
+  AsmReg tmp1_reg = tmp1.alloc_gp();
+  // First, clear relevant bits in dst.
+  if (width == 1) {
+    ASM(BTR64ri, dst, lsb);
+  } else if (lsb + width <= 31) {
+    ASM(AND64ri, dst, ~(((u64{1} << width) - 1) << lsb));
+  } else {
+    ASM(MOV64ri, tmp1_reg, ~(((u64{1} << width) - 1) << lsb));
+    ASM(AND64rr, dst, tmp1_reg);
+  }
+  // Second, clear irrelevant bits in src; result is in tmp1_reg.
+  if (width == 8) {
+    ASM(MOVZXr32r8, tmp1_reg, src);
+  } else if (width == 16) {
+    ASM(MOVZXr32r16, tmp1_reg, src);
+  } else if (width <= 32) {
+    ASM(MOV32rr, tmp1_reg, src);
+    if (width < 32) {
+      ASM(AND32ri, tmp1_reg, (u32{1} << width) - 1);
+    }
+  } else {
+    ASM(MOV64ri, tmp1_reg, (u64{1} << width) - 1);
+    ASM(AND64rr, tmp1_reg, src);
+  }
+  // Third, merge. Bits are disjoint, so addition is possible.
+  if (lsb >= 1 && lsb <= 3) {
+    ASM(LEA64rm, dst, FE_MEM(dst, u8(1 << lsb), tmp1_reg, 0));
+  } else {
+    if (lsb > 0 && lsb + width <= 32) {
+      ASM(SHL32ri, tmp1_reg, lsb);
+    } else if (lsb > 0) {
+      ASM(SHL64ri, tmp1_reg, lsb);
+    }
+    ASM(OR64rr, dst, tmp1_reg);
+  }
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> class BaseTy,
+          typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::generate_raw_bfiz(
+    AsmReg dst, AsmReg src, u32 lsb, u32 width) noexcept {
+  assert(lsb < 63 && width < 64 && lsb + width <= 64 && width != 0);
+  assert(dst != src);
+  assert(may_clobber_flags());
+  // Clear irrelevant bits in src and move to dst.
+  if (width == 8) {
+    ASM(MOVZXr32r8, dst, src);
+  } else if (width == 16) {
+    ASM(MOVZXr32r16, dst, src);
+  } else if (width <= 32) {
+    ASM(MOV32rr, dst, src);
+    if (width < 32) {
+      ASM(AND32ri, dst, (u32{1} << width) - 1);
+    }
+  } else {
+    ASM(MOV64ri, dst, (u64{1} << width) - 1);
+    ASM(AND64rr, dst, src);
+  }
+  // Shift into place.
+  if (lsb > 0 && lsb + width <= 32) {
+    ASM(SHL32ri, dst, lsb);
+  } else if (lsb > 0) {
+    ASM(SHL64ri, dst, lsb);
+  }
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> class BaseTy,
+          typename Config>
 void CompilerX64<Adaptor, Derived, BaseTy, Config>::CallBuilder::
     set_stack_used() noexcept {
-  if (stack_adjust_off == 0) {
+  if (this->compiler.stack.has_dynamic_alloca && stack_adjust_off == 0) {
     stack_adjust_off = this->compiler.text_writer.offset();
     // Always use 32-bit immediate
     ASMC(&this->compiler, SUB64ri, FE_SP, 0x100);
@@ -1624,39 +1676,28 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::CallBuilder::add_arg_byval(
   auto size = cca.size;
   set_stack_used();
   i32 off = 0;
+  i32 soff = cca.stack_off;
   while (size >= 8) {
     ASMC(&this->compiler, MOV64rm, tmp, FE_MEM(ptr, 0, FE_NOREG, off));
-    ASMC(&this->compiler,
-         MOV64mr,
-         FE_MEM(FE_SP, 0, FE_NOREG, (i32)(cca.stack_off + off)),
-         tmp);
+    ASMC(&this->compiler, MOV64mr, FE_MEM(FE_SP, 0, FE_NOREG, soff + off), tmp);
     off += 8;
     size -= 8;
   }
   if (size >= 4) {
     ASMC(&this->compiler, MOV32rm, tmp, FE_MEM(ptr, 0, FE_NOREG, off));
-    ASMC(&this->compiler,
-         MOV32mr,
-         FE_MEM(FE_SP, 0, FE_NOREG, (i32)(cca.stack_off + off)),
-         tmp);
+    ASMC(&this->compiler, MOV32mr, FE_MEM(FE_SP, 0, FE_NOREG, soff + off), tmp);
     off += 4;
     size -= 4;
   }
   if (size >= 2) {
     ASMC(&this->compiler, MOVZXr32m16, tmp, FE_MEM(ptr, 0, FE_NOREG, off));
-    ASMC(&this->compiler,
-         MOV16mr,
-         FE_MEM(FE_SP, 0, FE_NOREG, (i32)(cca.stack_off + off)),
-         tmp);
+    ASMC(&this->compiler, MOV16mr, FE_MEM(FE_SP, 0, FE_NOREG, soff + off), tmp);
     off += 2;
     size -= 2;
   }
   if (size >= 1) {
     ASMC(&this->compiler, MOVZXr32m8, tmp, FE_MEM(ptr, 0, FE_NOREG, off));
-    ASMC(&this->compiler,
-         MOV8mr,
-         FE_MEM(FE_SP, 0, FE_NOREG, (i32)(cca.stack_off + off)),
-         tmp);
+    ASMC(&this->compiler, MOV8mr, FE_MEM(FE_SP, 0, FE_NOREG, soff + off), tmp);
   }
 }
 
@@ -1669,56 +1710,22 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::CallBuilder::add_arg_stack(
   set_stack_used();
 
   auto reg = vp.has_reg() ? vp.cur_reg() : vp.load_to_reg(&this->compiler);
+  FeMem mem_op = FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off));
   if (this->compiler.register_file.reg_bank(reg) == Config::GP_BANK) {
     switch (cca.size) {
-    case 1:
-      ASMC(&this->compiler,
-           MOV8mr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    case 2:
-      ASMC(&this->compiler,
-           MOV16mr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    case 4:
-      ASMC(&this->compiler,
-           MOV32mr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    case 8:
-      ASMC(&this->compiler,
-           MOV64mr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
+    case 1: ASMC(&this->compiler, MOV8mr, mem_op, reg); break;
+    case 2: ASMC(&this->compiler, MOV16mr, mem_op, reg); break;
+    case 4: ASMC(&this->compiler, MOV32mr, mem_op, reg); break;
+    case 8: ASMC(&this->compiler, MOV64mr, mem_op, reg); break;
     default: TPDE_UNREACHABLE("invalid GP reg size");
     }
   } else {
     assert(this->compiler.register_file.reg_bank(reg) == Config::FP_BANK);
     switch (cca.size) {
-    case 4:
-      ASMC(&this->compiler,
-           SSE_MOVSSmr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    case 8:
-      ASMC(&this->compiler,
-           SSE_MOVSDmr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    case 16:
-      ASMC(&this->compiler,
-           SSE_MOVDQAmr,
-           FE_MEM(FE_SP, 0, FE_NOREG, i32(cca.stack_off)),
-           reg);
-      break;
-    default: TPDE_UNREACHABLE("invalid GP reg size");
+    case 4: ASMC(&this->compiler, SSE_MOVSSmr, mem_op, reg); break;
+    case 8: ASMC(&this->compiler, SSE_MOVSDmr, mem_op, reg); break;
+    case 16: ASMC(&this->compiler, SSE_MOVDQAmr, mem_op, reg); break;
+    default: TPDE_UNREACHABLE("invalid SSE reg size");
     }
   }
 }
@@ -1739,7 +1746,11 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::CallBuilder::call_impl(
     if (next_xmm.valid() && next_xmm.id() - AsmReg::XMM0 < 8) {
       xmm_cnt = next_xmm.id() - AsmReg::XMM0;
     }
-    ASMC(&this->compiler, MOV32ri, FE_AX, xmm_cnt);
+    if (xmm_cnt != 0) {
+      ASMC(&this->compiler, MOV32ri, FE_AX, xmm_cnt);
+    } else {
+      ASMC(&this->compiler, XOR32rr, FE_AX, FE_AX);
+    }
   }
 
   u32 sub = 0;
@@ -1748,14 +1759,15 @@ void CompilerX64<Adaptor, Derived, BaseTy, Config>::CallBuilder::call_impl(
     sub = util::align_up(this->assigner.get_stack_size(), 0x10);
     memcpy(inst_ptr + 3, &sub, sizeof(u32));
   } else {
-    assert(this->assigner.get_stack_size() == 0);
+    auto &max_stack_size = this->compiler.max_callee_stack_arg_size;
+    max_stack_size = std::max(max_stack_size, this->assigner.get_stack_size());
   }
 
   if (auto *sym = std::get_if<SymRef>(&target)) {
     this->compiler.text_writer.ensure_space(16);
     ASMC(&this->compiler, CALL, this->compiler.text_writer.cur_ptr());
     this->compiler.reloc_text(
-        *sym, R_X86_64_PLT32, this->compiler.text_writer.offset() - 4, -4);
+        *sym, elf::R_X86_64_PLT32, this->compiler.text_writer.offset() - 4, -4);
   } else {
     ValuePart &tvp = std::get<ValuePart>(target);
     if (tvp.has_assignment() && !tvp.assignment().register_valid()) {
@@ -1801,6 +1813,119 @@ template <IRAdaptor Adaptor,
           typename Derived,
           template <typename, typename, typename> typename BaseTy,
           typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::switch_emit_cmp(
+    const AsmReg cmp_reg,
+    const AsmReg tmp_reg,
+    const u64 case_value,
+    const bool width_is_32) noexcept {
+  if (width_is_32) {
+    ASM(CMP32ri, cmp_reg, case_value);
+  } else {
+    if ((i64)((i32)case_value) == (i64)case_value) {
+      ASM(CMP64ri, cmp_reg, case_value);
+    } else {
+      this->materialize_constant(&case_value, Config::GP_BANK, 8, tmp_reg);
+      ASM(CMP64rr, cmp_reg, tmp_reg);
+    }
+  }
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::switch_emit_cmpeq(
+    const Label case_label,
+    const AsmReg cmp_reg,
+    const AsmReg tmp_reg,
+    const u64 case_value,
+    const bool width_is_32) noexcept {
+  switch_emit_cmp(cmp_reg, tmp_reg, case_value, width_is_32);
+  generate_raw_jump(Jump::je, case_label);
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+bool CompilerX64<Adaptor, Derived, BaseTy, Config>::switch_emit_jump_table(
+    Label default_label,
+    std::span<const Label> labels,
+    AsmReg cmp_reg,
+    AsmReg tmp_reg,
+    u64 low_bound,
+    u64 high_bound,
+    bool width_is_32) noexcept {
+  // NB: we must not evict any registers here.
+  if (low_bound != 0) {
+    switch_emit_cmp(cmp_reg, tmp_reg, low_bound, width_is_32);
+    generate_raw_jump(Jump::jb, default_label);
+  }
+  switch_emit_cmp(cmp_reg, tmp_reg, high_bound, width_is_32);
+  generate_raw_jump(Jump::ja, default_label);
+
+  if (width_is_32) {
+    // zero-extend cmp_reg since we use the full width
+    ASM(MOV32rr, cmp_reg, cmp_reg);
+  }
+
+  if (low_bound != 0) {
+    if (i32(low_bound) == i64(low_bound)) {
+      ASM(SUB64ri, cmp_reg, low_bound);
+    } else {
+      this->materialize_constant(&low_bound, Config::GP_BANK, 8, tmp_reg);
+      ASM(SUB64rr, cmp_reg, tmp_reg);
+    }
+  }
+
+  Label jump_table = this->text_writer.label_create();
+  ASM(LEA64rm, tmp_reg, FE_MEM(FE_IP, 0, FE_NOREG, -1));
+  // we reuse the jump offset stuff since the patch procedure is the same
+  this->text_writer.label_ref(jump_table,
+                              this->text_writer.offset() - 4,
+                              LabelFixupKind::X64_JMP_OR_MEM_DISP);
+  // load the 4 byte displacement from the jump table
+  ASM(MOVSXr64m32, cmp_reg, FE_MEM(tmp_reg, 4, cmp_reg, 0));
+  ASM(ADD64rr, tmp_reg, cmp_reg);
+  ASM(JMPr, tmp_reg);
+
+  this->text_writer.align(4);
+  this->text_writer.ensure_space(4 + 4 * labels.size());
+  this->label_place(jump_table);
+  const u32 table_off = this->text_writer.offset();
+  for (u32 i = 0; i < labels.size(); i++) {
+    if (this->text_writer.label_is_pending(labels[i])) {
+      this->text_writer.label_ref(labels[i],
+                                  this->text_writer.offset(),
+                                  LabelFixupKind::X64_JUMP_TABLE);
+      this->text_writer.write(table_off);
+    } else {
+      const auto label_off = this->text_writer.label_offset(labels[i]);
+      this->text_writer.write((i32)label_off - (i32)table_off);
+    }
+  }
+  return true;
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
+void CompilerX64<Adaptor, Derived, BaseTy, Config>::switch_emit_binary_step(
+    const Label case_label,
+    const Label gt_label,
+    const AsmReg cmp_reg,
+    const AsmReg tmp_reg,
+    const u64 case_value,
+    const bool width_is_32) noexcept {
+  switch_emit_cmpeq(case_label, cmp_reg, tmp_reg, case_value, width_is_32);
+  generate_raw_jump(Jump::ja, gt_label);
+}
+
+template <IRAdaptor Adaptor,
+          typename Derived,
+          template <typename, typename, typename> typename BaseTy,
+          typename Config>
 CompilerX64<Adaptor, Derived, BaseTy, Config>::ScratchReg
     CompilerX64<Adaptor, Derived, BaseTy, Config>::tls_get_addr(
         SymRef sym, TLSModel model) noexcept {
@@ -1809,6 +1934,9 @@ CompilerX64<Adaptor, Derived, BaseTy, Config>::ScratchReg
   case TLSModel::GlobalDynamic: {
     // Generate function call to __tls_get_addr; on x86-64, this takes a single
     // parameter in rdi.
+    assert(!this->stack.is_leaf_function);
+    assert(may_clobber_flags());
+    this->stack.generated_call = true;
     auto csr = CCAssignerSysV::Info.callee_saved_regs;
     for (auto reg : util::BitSetIterator<>{this->register_file.used & ~csr}) {
       this->evict_reg(Reg{reg});
@@ -1821,7 +1949,8 @@ CompilerX64<Adaptor, Derived, BaseTy, Config>::ScratchReg
     this->text_writer.ensure_space(0x10);
     *this->text_writer.cur_ptr()++ = 0x66;
     ASMNC(LEA64rm, arg_reg, FE_MEM(FE_IP, 0, FE_NOREG, 0));
-    this->reloc_text(sym, R_X86_64_TLSGD, this->text_writer.offset() - 4, -4);
+    this->reloc_text(
+        sym, elf::R_X86_64_TLSGD, this->text_writer.offset() - 4, -4);
     *this->text_writer.cur_ptr()++ = 0x66;
     *this->text_writer.cur_ptr()++ = 0x66;
     *this->text_writer.cur_ptr()++ = 0x48;
@@ -1831,7 +1960,7 @@ CompilerX64<Adaptor, Derived, BaseTy, Config>::ScratchReg
           "__tls_get_addr", Assembler::SymBinding::GLOBAL);
     }
     this->reloc_text(this->sym_tls_get_addr,
-                     R_X86_64_PLT32,
+                     elf::R_X86_64_PLT32,
                      this->text_writer.offset() - 4,
                      -4);
     arg.reset();

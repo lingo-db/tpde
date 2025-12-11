@@ -7,11 +7,7 @@
 
 define i8 @atomicrmw_nand_i8_seq_cst(ptr %p, i8 %a) {
 ; X64-LABEL: <atomicrmw_nand_i8_seq_cst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    movzx eax, byte ptr [rdi]
+; X64:         movzx eax, byte ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and cl, sil
@@ -20,26 +16,18 @@ define i8 @atomicrmw_nand_i8_seq_cst(ptr %p, i8 %a) {
 ; X64-NEXT:    cmpxchg byte ptr [rdi], cl
 ; X64-NEXT:    jne <L0>
 ; X64-NEXT:    movzx eax, al
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i8_seq_cst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrb w2, [x0]
+; ARM64:         ldrb w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casalb w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2, uxtb
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0x38 <atomicrmw_nand_i8_seq_cst+0x18>
+; ARM64-NEXT:    b.ne 0x8 <atomicrmw_nand_i8_seq_cst+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i8 %a seq_cst
   ret i8 %r
@@ -47,11 +35,7 @@ define i8 @atomicrmw_nand_i8_seq_cst(ptr %p, i8 %a) {
 
 define void @atomicrmw_nand_i8_seq_cst_nouse(ptr %p, i8 %a) {
 ; X64-LABEL: <atomicrmw_nand_i8_seq_cst_nouse>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    movzx eax, byte ptr [rdi]
+; X64:         movzx eax, byte ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and cl, sil
@@ -60,26 +44,18 @@ define void @atomicrmw_nand_i8_seq_cst_nouse(ptr %p, i8 %a) {
 ; X64-NEXT:    cmpxchg byte ptr [rdi], cl
 ; X64-NEXT:    jne <L0>
 ; X64-NEXT:    movzx eax, al
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i8_seq_cst_nouse>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrb w2, [x0]
+; ARM64:         ldrb w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casalb w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2, uxtb
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0x98 <atomicrmw_nand_i8_seq_cst_nouse+0x18>
+; ARM64-NEXT:    b.ne 0x38 <atomicrmw_nand_i8_seq_cst_nouse+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i8 %a seq_cst
   ret void
@@ -87,11 +63,7 @@ define void @atomicrmw_nand_i8_seq_cst_nouse(ptr %p, i8 %a) {
 
 define i16 @atomicrmw_nand_i16_seq_cst(ptr %p, i16 %a) {
 ; X64-LABEL: <atomicrmw_nand_i16_seq_cst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    movzx eax, word ptr [rdi]
+; X64:         movzx eax, word ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and ecx, esi
@@ -100,26 +72,18 @@ define i16 @atomicrmw_nand_i16_seq_cst(ptr %p, i16 %a) {
 ; X64-NEXT:    cmpxchg word ptr [rdi], cx
 ; X64-NEXT:    jne <L0>
 ; X64-NEXT:    movzx eax, ax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i16_seq_cst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrh w2, [x0]
+; ARM64:         ldrh w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casalh w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2, uxth
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0xf8 <atomicrmw_nand_i16_seq_cst+0x18>
+; ARM64-NEXT:    b.ne 0x68 <atomicrmw_nand_i16_seq_cst+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i16 %a seq_cst
   ret i16 %r
@@ -127,11 +91,7 @@ define i16 @atomicrmw_nand_i16_seq_cst(ptr %p, i16 %a) {
 
 define void @atomicrmw_nand_i16_seq_cst_nouse(ptr %p, i16 %a) {
 ; X64-LABEL: <atomicrmw_nand_i16_seq_cst_nouse>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    movzx eax, word ptr [rdi]
+; X64:         movzx eax, word ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and ecx, esi
@@ -140,26 +100,18 @@ define void @atomicrmw_nand_i16_seq_cst_nouse(ptr %p, i16 %a) {
 ; X64-NEXT:    cmpxchg word ptr [rdi], cx
 ; X64-NEXT:    jne <L0>
 ; X64-NEXT:    movzx eax, ax
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i16_seq_cst_nouse>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldrh w2, [x0]
+; ARM64:         ldrh w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casalh w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2, uxth
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0x158 <atomicrmw_nand_i16_seq_cst_nouse+0x18>
+; ARM64-NEXT:    b.ne 0x98 <atomicrmw_nand_i16_seq_cst_nouse+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i16 %a seq_cst
   ret void
@@ -167,11 +119,7 @@ define void @atomicrmw_nand_i16_seq_cst_nouse(ptr %p, i16 %a) {
 
 define i32 @atomicrmw_nand_i32_seq_cst(ptr %p, i32 %a) {
 ; X64-LABEL: <atomicrmw_nand_i32_seq_cst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov eax, dword ptr [rdi]
+; X64:         mov eax, dword ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and ecx, esi
@@ -179,26 +127,18 @@ define i32 @atomicrmw_nand_i32_seq_cst(ptr %p, i32 %a) {
 ; X64-NEXT:    lock
 ; X64-NEXT:    cmpxchg dword ptr [rdi], ecx
 ; X64-NEXT:    jne <L0>
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i32_seq_cst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldr w2, [x0]
+; ARM64:         ldr w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casal w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0x1b8 <atomicrmw_nand_i32_seq_cst+0x18>
+; ARM64-NEXT:    b.ne 0xc8 <atomicrmw_nand_i32_seq_cst+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i32 %a seq_cst
   ret i32 %r
@@ -206,11 +146,7 @@ define i32 @atomicrmw_nand_i32_seq_cst(ptr %p, i32 %a) {
 
 define void @atomicrmw_nand_i32_seq_cst_nouse(ptr %p, i32 %a) {
 ; X64-LABEL: <atomicrmw_nand_i32_seq_cst_nouse>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov eax, dword ptr [rdi]
+; X64:         mov eax, dword ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov ecx, eax
 ; X64-NEXT:    and ecx, esi
@@ -218,26 +154,18 @@ define void @atomicrmw_nand_i32_seq_cst_nouse(ptr %p, i32 %a) {
 ; X64-NEXT:    lock
 ; X64-NEXT:    cmpxchg dword ptr [rdi], ecx
 ; X64-NEXT:    jne <L0>
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i32_seq_cst_nouse>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldr w2, [x0]
+; ARM64:         ldr w2, [x0]
 ; ARM64-NEXT:    mov w3, w2
 ; ARM64-NEXT:    and w4, w2, w1
 ; ARM64-NEXT:    mvn w4, w4
 ; ARM64-NEXT:    casal w3, w4, [x0]
 ; ARM64-NEXT:    cmp w3, w2
 ; ARM64-NEXT:    mov w2, w3
-; ARM64-NEXT:    b.ne 0x218 <atomicrmw_nand_i32_seq_cst_nouse+0x18>
+; ARM64-NEXT:    b.ne 0xf8 <atomicrmw_nand_i32_seq_cst_nouse+0x8>
 ; ARM64-NEXT:    mov w0, w2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i32 %a seq_cst
   ret void
@@ -245,11 +173,7 @@ define void @atomicrmw_nand_i32_seq_cst_nouse(ptr %p, i32 %a) {
 
 define i64 @atomicrmw_nand_i64_seq_cst(ptr %p, i64 %a) {
 ; X64-LABEL: <atomicrmw_nand_i64_seq_cst>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, qword ptr [rdi]
+; X64:         mov rax, qword ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov rcx, rax
 ; X64-NEXT:    and rcx, rsi
@@ -257,26 +181,18 @@ define i64 @atomicrmw_nand_i64_seq_cst(ptr %p, i64 %a) {
 ; X64-NEXT:    lock
 ; X64-NEXT:    cmpxchg qword ptr [rdi], rcx
 ; X64-NEXT:    jne <L0>
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i64_seq_cst>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldr x2, [x0]
+; ARM64:         ldr x2, [x0]
 ; ARM64-NEXT:    mov x3, x2
 ; ARM64-NEXT:    and x4, x2, x1
 ; ARM64-NEXT:    mvn x4, x4
 ; ARM64-NEXT:    casal x3, x4, [x0]
 ; ARM64-NEXT:    cmp x3, x2
 ; ARM64-NEXT:    mov x2, x3
-; ARM64-NEXT:    b.ne 0x278 <atomicrmw_nand_i64_seq_cst+0x18>
+; ARM64-NEXT:    b.ne 0x128 <atomicrmw_nand_i64_seq_cst+0x8>
 ; ARM64-NEXT:    mov x0, x2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i64 %a seq_cst
   ret i64 %r
@@ -284,11 +200,7 @@ define i64 @atomicrmw_nand_i64_seq_cst(ptr %p, i64 %a) {
 
 define void @atomicrmw_nand_i64_seq_cst_nouse(ptr %p, i64 %a) {
 ; X64-LABEL: <atomicrmw_nand_i64_seq_cst_nouse>:
-; X64:         push rbp
-; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
-; X64-NEXT:    sub rsp, 0x30
-; X64-NEXT:    mov rax, qword ptr [rdi]
+; X64:         mov rax, qword ptr [rdi]
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    mov rcx, rax
 ; X64-NEXT:    and rcx, rsi
@@ -296,26 +208,18 @@ define void @atomicrmw_nand_i64_seq_cst_nouse(ptr %p, i64 %a) {
 ; X64-NEXT:    lock
 ; X64-NEXT:    cmpxchg qword ptr [rdi], rcx
 ; X64-NEXT:    jne <L0>
-; X64-NEXT:    add rsp, 0x30
-; X64-NEXT:    pop rbp
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <atomicrmw_nand_i64_seq_cst_nouse>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
-; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    ldr x2, [x0]
+; ARM64:         ldr x2, [x0]
 ; ARM64-NEXT:    mov x3, x2
 ; ARM64-NEXT:    and x4, x2, x1
 ; ARM64-NEXT:    mvn x4, x4
 ; ARM64-NEXT:    casal x3, x4, [x0]
 ; ARM64-NEXT:    cmp x3, x2
 ; ARM64-NEXT:    mov x2, x3
-; ARM64-NEXT:    b.ne 0x2d8 <atomicrmw_nand_i64_seq_cst_nouse+0x18>
+; ARM64-NEXT:    b.ne 0x158 <atomicrmw_nand_i64_seq_cst_nouse+0x8>
 ; ARM64-NEXT:    mov x0, x2
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
 ; ARM64-NEXT:    ret
   %r = atomicrmw nand ptr %p, i64 %a seq_cst
   ret void

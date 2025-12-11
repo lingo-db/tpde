@@ -5,10 +5,10 @@
 
 #include <algorithm>
 #include <compare>
-#include <elf.h>
 #include <unistd.h>
 
 #include "tpde/AssemblerElf.hpp"
+#include "tpde/ELF.hpp"
 #include "tpde/base.hpp"
 #include "tpde/util/SmallVector.hpp"
 #include "tpde/util/misc.hpp"
@@ -21,11 +21,7 @@
 extern "C" void __register_frame(void *);
 extern "C" void __deregister_frame(void *);
 
-#else
-  #error "unsupported architecture/os combo"
-#endif
-
-namespace tpde {
+namespace tpde::elf {
 
 namespace {
 
@@ -35,13 +31,13 @@ enum class Arch {
   AArch64,
 };
 
-#if defined(__x86_64__)
+  #if defined(__x86_64__)
 static constexpr Arch TargetArch = Arch::X86_64;
-#elif defined(__aarch64__)
+  #elif defined(__aarch64__)
 static constexpr Arch TargetArch = Arch::AArch64;
-#else
+  #else
 static constexpr Arch TargetArch = Arch::Unknown;
-#endif
+  #endif
 
 } // anonymous namespace
 
@@ -65,13 +61,13 @@ bool ElfMapper::map(AssemblerElf &assembler, SymbolResolver resolver) noexcept {
   u32 got_plt_slot_count =
       assembler.local_symbols.size() + assembler.global_symbols.size();
 
-#ifdef __x86_64__
+  #ifdef __x86_64__
   // PLT+GOT slot: jmp qword ptr [rip + 2]; ud2; <address>
   constexpr size_t PLT_ENTRY_SIZE = 16;
-#elif defined(__aarch64__)
+  #elif defined(__aarch64__)
   // PLT+GOT slot: ldr x16, pc+8; br x16; <address>
   constexpr size_t PLT_ENTRY_SIZE = 16;
-#endif
+  #endif
 
   // Sort sections by permissions
   struct AllocSection {
@@ -134,7 +130,7 @@ bool ElfMapper::map(AssemblerElf &assembler, SymbolResolver resolver) noexcept {
     }
     sec.addr = base_off;
     size_t sec_size = sec.size();
-    if (as.section == assembler.secref_eh_frame) {
+    if (as.section == assembler.get_default_section(SectionKind::EHFrame)) {
       // Add zero-terminator to eh_frame. This is required for libgcc's
       // __register_frame, which iterates over FDEs up to the zero-terminator.
       sec_size += 4;
@@ -396,8 +392,9 @@ bool ElfMapper::map(AssemblerElf &assembler, SymbolResolver resolver) noexcept {
   }
 
   // Register eh_frame FDEs
-  auto &eh_frame = assembler.get_section(assembler.secref_eh_frame);
-  registered_frame_off = eh_frame.addr + assembler.eh_first_fde_off;
+  auto &eh_frame = assembler.get_section(
+      assembler.get_default_section(SectionKind::EHFrame));
+  registered_frame_off = eh_frame.addr;
   __register_frame(mapped_addr + registered_frame_off);
 
   return true;
@@ -412,4 +409,20 @@ void *ElfMapper::get_sym_addr(SymRef sym) noexcept {
   return sym_addrs[idx];
 }
 
-} // namespace tpde
+} // namespace tpde::elf
+
+#else
+
+// Dummy implementation for non-ELF platforms
+namespace tpde::elf {
+void ElfMapper::reset() noexcept {
+  (void)mapped_addr;
+  (void)mapped_size;
+  (void)registered_frame_off;
+  (void)local_sym_count;
+}
+bool ElfMapper::map(AssemblerElf &, SymbolResolver) noexcept { return false; }
+void *ElfMapper::get_sym_addr(SymRef) noexcept { return nullptr; }
+} // namespace tpde::elf
+
+#endif

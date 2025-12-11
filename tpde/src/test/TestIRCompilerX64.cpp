@@ -2,10 +2,77 @@
 //
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "TestIRCompiler.hpp"
+#include "TestIRCompilerX64.hpp"
 
-namespace tpde::test {
-using namespace tpde::x64;
+#include "TestIR.hpp"
+#include "TestIRAdaptor.hpp"
+#include "tpde/x64/CompilerX64.hpp"
+
+namespace {
+using namespace tpde;
+using namespace tpde::test;
+
+struct TestIRCompilerX64 : x64::CompilerX64<TestIRAdaptor, TestIRCompilerX64> {
+  using Base = x64::CompilerX64<TestIRAdaptor, TestIRCompilerX64>;
+
+  bool no_fixed_assignments;
+
+  explicit TestIRCompilerX64(TestIRAdaptor *adaptor, bool no_fixed_assignments)
+      : Base{adaptor}, no_fixed_assignments(no_fixed_assignments) {}
+
+  bool cur_func_may_emit_calls() const noexcept {
+    return this->ir()->functions[this->adaptor->cur_func].has_call;
+  }
+
+  SymRef cur_personality_func() const noexcept { return {}; }
+
+  struct ValueParts {
+    static u32 count() noexcept { return 1; }
+    static u32 size_bytes(u32) noexcept { return 8; }
+    static tpde::RegBank reg_bank(u32) noexcept {
+      return x64::PlatformConfig::GP_BANK;
+    }
+  };
+
+  ValueParts val_parts(IRValueRef) { return ValueParts{}; }
+
+  AsmReg select_fixed_assignment_reg(AssignmentPartRef ap,
+                                     const IRValueRef value) noexcept {
+    if (no_fixed_assignments && !try_force_fixed_assignment(value)) {
+      return AsmReg::make_invalid();
+    }
+
+    return Base::select_fixed_assignment_reg(ap, value);
+  }
+
+  bool try_force_fixed_assignment(const IRValueRef value) const noexcept {
+    return ir()->values[static_cast<u32>(value)].force_fixed_assignment;
+  }
+
+  std::optional<ValRefSpecial> val_ref_special(IRValueRef) noexcept {
+    return {};
+  }
+
+  ValuePart val_part_ref_special(ValRefSpecial &, u32) noexcept {
+    TPDE_UNREACHABLE("val_part_ref_special on IR without special values");
+  }
+
+  void define_func_idx(IRFuncRef func, const u32 idx) noexcept {
+    assert(static_cast<u32>(func) == idx);
+    (void)func;
+    (void)idx;
+  }
+
+  [[nodiscard]] bool compile_inst(IRInstRef, InstRange) noexcept;
+
+  TestIR *ir() noexcept { return this->adaptor->ir; }
+
+  const TestIR *ir() const noexcept { return this->adaptor->ir; }
+
+  bool compile_add(IRInstRef) noexcept;
+  bool compile_sub(IRInstRef) noexcept;
+  bool compile_condselect(IRInstRef) noexcept;
+};
 
 bool TestIRCompilerX64::compile_inst(IRInstRef inst_idx, InstRange) noexcept {
   const TestIR::Value &value =
@@ -30,53 +97,45 @@ bool TestIRCompilerX64::compile_inst(IRInstRef inst_idx, InstRange) noexcept {
     rb.ret();
     return true;
   }
+  case trap:
+    ASM(UD2);
+    this->release_regs_after_return();
+    return true;
   case alloca: return true;
-  case br: {
-    auto block_idx = ir()->value_operands[value.op_begin_idx];
-    auto spilled = this->spill_before_branch();
-
-    this->generate_branch_to_block(
-        Jump::jmp, static_cast<IRBlockRef>(block_idx), false, true);
-
-    this->release_spilled_regs(spilled);
+  case zerofill: {
+    auto size = ir()->value_operands[value.op_begin_idx];
+    this->text_writer.ensure_space(size);
+    ASM(JMP, this->text_writer.cur_ptr() + size);
+    std::memset(this->text_writer.cur_ptr(), 0, size);
+    this->text_writer.cur_ptr() += size;
     return true;
   }
-  case condbr: {
-    auto val_idx =
-        static_cast<IRValueRef>(ir()->value_operands[value.op_begin_idx]);
-    auto true_block =
-        static_cast<IRBlockRef>(ir()->value_operands[value.op_begin_idx + 1]);
-    auto false_block =
-        static_cast<IRBlockRef>(ir()->value_operands[value.op_begin_idx + 2]);
+  case br: {
+    auto block_idx = ir()->value_operands[value.op_begin_idx];
+    this->generate_uncond_branch(IRBlockRef(block_idx));
+    return true;
+  }
+  case condbr:
+  case tbz: {
+    auto val_idx = IRValueRef(ir()->value_operands[value.op_begin_idx]);
+    auto true_block = IRBlockRef(ir()->value_operands[value.op_begin_idx + 1]);
+    auto false_block = IRBlockRef(ir()->value_operands[value.op_begin_idx + 2]);
 
-    auto [_, val] = this->val_ref_single(val_idx);
-
-    auto true_needs_split = this->branch_needs_split(true_block);
-    auto false_needs_split = this->branch_needs_split(false_block);
-
-    auto val_reg = val.load_to_reg();
-
-    auto spilled = this->spill_before_branch();
-
-    ASM(CMP64ri, val_reg, 0);
-    if (this->analyzer.block_ref(this->next_block()) == true_block) {
-      this->generate_branch_to_block(
-          Jump::je, false_block, false_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, true_block, false, true);
-    } else if (this->analyzer.block_ref(this->next_block()) == false_block) {
-      this->generate_branch_to_block(
-          Jump::jne, true_block, true_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, false_block, false, true);
-    } else if (!true_needs_split) {
-      this->generate_branch_to_block(Jump::jne, true_block, false, false);
-      this->generate_branch_to_block(Jump::jmp, false_block, false, true);
+    auto [cond_ref, cond_part] = this->val_ref_single(val_idx);
+    auto cond_reg = cond_part.load_to_reg();
+    Jump cc = Jump::jne;
+    if (value.op == condbr) {
+      ASM(TEST64rr, cond_reg, cond_reg);
     } else {
-      this->generate_branch_to_block(
-          Jump::je, false_block, false_needs_split, false);
-      this->generate_branch_to_block(Jump::jmp, true_block, false, true);
+      u32 bit = ir()->value_operands[value.op_begin_idx + 3];
+      if (bit <= 32) {
+        ASM(TEST32ri, cond_reg, u32{1} << bit);
+      } else {
+        ASM(BT64ri, cond_reg, bit);
+        cc = Jump::jb;
+      }
     }
-
-    this->release_spilled_regs(spilled);
+    this->generate_cond_branch(cc, true_block, false_block);
     return true;
   }
   case call: {
@@ -196,4 +255,13 @@ bool TestIRCompilerX64::compile_condselect(IRInstRef inst_idx) noexcept {
   res.set_value(std::move(res_tmp));
   return true;
 }
-} // namespace tpde::test
+} // namespace
+
+std::vector<u8> test::compile_ir_x64(TestIR *ir, bool no_fixed_assignments) {
+  test::TestIRAdaptor adaptor{ir};
+  TestIRCompilerX64 compiler{&adaptor, no_fixed_assignments};
+  if (!compiler.compile()) {
+    return {};
+  }
+  return compiler.assembler.build_object_file();
+}

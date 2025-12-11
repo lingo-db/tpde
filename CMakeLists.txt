@@ -6,6 +6,8 @@ cmake_minimum_required(VERSION 3.25)
 
 project(tpde2)
 
+include(CheckLinkerFlag)
+
 # TODO(ae): use target_compile_features(cxx_std_20)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +16,7 @@ option(TPDE_INCLUDE_TESTS "enable test" ON)
 option(TPDE_ENABLE_ENCODEGEN "enable tpde-encodegen tool (needs LLVM)" ON)
 option(TPDE_ENABLE_LLVM "enable LLVM back-end (needs LLVM)" ON)
 option(TPDE_ENABLE_COVERAGE "enable coverage instrumentation" OFF)
+option(TPDE_ENABLE_PCH "enable pre-compiled headers" OFF)
 option(TPDE_BUILD_DOCS "Build documentation" OFF)
 
 # warnings
@@ -39,8 +42,11 @@ else ()
         add_compile_options(-Wsign-compare)
     endif ()
 
-    add_compile_options(-ffunction-sections -fdata-sections)
-    add_link_options(LINKER:--gc-sections)
+    check_linker_flag(CXX "LINKER:--gc-sections" HAVE_GC_SECTIONS)
+    if (HAVE_GC_SECTIONS)
+        add_compile_options(-ffunction-sections -fdata-sections)
+        add_link_options(LINKER:--gc-sections)
+    endif ()
 
     # for development builds use -Werror and enable sanitizers
     if (PROJECT_IS_TOP_LEVEL)

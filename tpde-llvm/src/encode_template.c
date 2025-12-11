@@ -22,6 +22,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Note: using 8/16-bit integers as parameters is problematic, as some ABIs will
+// expect an implicit extension of the argument to 32 bit (which we don't do).
+
 typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
@@ -264,24 +267,23 @@ u128 TARGET_V1 bswapi128(u128 a) { return (u128)__builtin_bswap64(a) << 64 | __b
 u32 TARGET_V1 ctpopi32(u32 a) { return __builtin_popcount(a); }
 u64 TARGET_V1 ctpopi64(u64 a) { return __builtin_popcountll(a); }
 
-u32 TARGET_V1 cttzi32_zero_poison(u32 a) { return __builtin_ctz(a); }
-u64 TARGET_V1 cttzi64_zero_poison(u64 a) { return __builtin_ctzll(a); }
+u32 TARGET_V1 cttzi32_zp(u32 a) { return __builtin_ctz(a); }
+u64 TARGET_V1 cttzi64_zp(u64 a) { return __builtin_ctzll(a); }
 
-u32 TARGET_V1 cttzi8(i8 a) { if ((u8)a == 0) { return 8; } else { return __builtin_ctz(a); }}
-u32 TARGET_V1 cttzi16(i16 a) { if ((u16)a == 0) { return 16; } else { return __builtin_ctz(a); }}
-u32 TARGET_V1 cttzi32(u32 a) { if (a == 0) { return 32; } else { return __builtin_ctz(a); }}
-u64 TARGET_V1 cttzi64(u64 a) { if (a == 0) { return 64; } else { return __builtin_ctzll(a); }}
+u32 TARGET_V1 cttzi8(u32 a) { return __builtin_ctz(0x100|a); }
+u32 TARGET_V1 cttzi16(u32 a) { return __builtin_ctz(0x10000|a); }
+u32 TARGET_V1 cttzi32(u32 a) { return !a ? 32 : __builtin_ctz(a); }
+u64 TARGET_V1 cttzi64(u64 a) { return !a ? 64 : __builtin_ctzll(a); }
 
+u32 TARGET_V1 ctlzi8_zp(u32 a) { return __builtin_clz((u8)a) - 24; }
+u32 TARGET_V1 ctlzi16_zp(u32 a) { return __builtin_clz((u16)a) - 16; }
+u32 TARGET_V1 ctlzi32_zp(u32 a) { return __builtin_clz(a); }
+u64 TARGET_V1 ctlzi64_zp(u64 a) { return __builtin_clzll(a); }
 
-u32 TARGET_V1 ctlzi8_zero_poison(i8 a) { return __builtin_clz((u32)(u8)a) - 24; }
-u32 TARGET_V1 ctlzi16_zero_poison(i16 a) { return __builtin_clz((u32)(u16)a) - 16; }
-u32 TARGET_V1 ctlzi32_zero_poison(u32 a) { return __builtin_clz(a); }
-u64 TARGET_V1 ctlzi64_zero_poison(u64 a) { return __builtin_clzll(a); }
-
-u32 TARGET_V1 ctlzi8(i8 a) { if ((u8)a == 0) { return 8; } else { return __builtin_clz((u32)(u8)a) - 24; }}
-u32 TARGET_V1 ctlzi16(i16 a) { if ((u16)a == 0) { return 16; } else { return __builtin_clz((u32)(u16)a) - 16; }}
-u32 TARGET_V1 ctlzi32(u32 a) { if (a == 0) { return 32; } else { return __builtin_clz(a); }}
-u64 TARGET_V1 ctlzi64(u64 a) { if (a == 0) { return 64; } else { return __builtin_clzll(a); }}
+u32 TARGET_V1 ctlzi8(u32 a) { return !(u8)a ? 8 : __builtin_clz((u8)a) - 24; }
+u32 TARGET_V1 ctlzi16(u32 a) { return !(u16)a ? 16 : __builtin_clz((u16)a) - 16; }
+u32 TARGET_V1 ctlzi32(u32 a) { return !a ? 32 : __builtin_clz(a); }
+u64 TARGET_V1 ctlzi64(u64 a) { return !a ? 64 : __builtin_clzll(a); }
 
 u32 TARGET_V1 bitreversei32(u32 a) { return __builtin_bitreverse32(a); }
 u64 TARGET_V1 bitreversei64(u64 a) { return __builtin_bitreverse64(a); }
@@ -446,6 +448,10 @@ v2u64 TARGET_V1 shlv2u64(v2u64 a, v2u64 b) { return (a << b); }
 v2u64 TARGET_V1 shrv2u64(v2u64 a, v2u64 b) { return (a >> b); }
 v2i64 TARGET_V1 ashrv2i64(v2i64 a, v2i64 b) { return (a >> b); }
 
+#define ICMP_SCALAR(pred, cmp, sign, bits)                                     \
+    bool TARGET_V1 icmp_##pred##i##bits(sign##bits a, sign##bits b) { return a cmp b; } \
+    u64 TARGET_V1 icmpmask_##pred##i##bits(sign##bits a, sign##bits b) { return -(u64)(a cmp b); } \
+    u64 TARGET_V1 icmpset_##pred##i##bits(sign##bits a, sign##bits b) { return a cmp b; }
 #define ICMP_VEC(pred, cmp, sign, resty, nelem, bits)                          \
     resty TARGET_V1 icmp_##pred##v##nelem##sign##bits(v##nelem##sign##bits a, v##nelem##sign##bits b) { \
       return trunc_##v##nelem##i##bits##_1(a cmp b);                           \
@@ -468,6 +474,8 @@ v2i64 TARGET_V1 ashrv2i64(v2i64 a, v2i64 b) { return (a >> b); }
     fn(slt, <, i, __VA_ARGS__) \
     fn(sle, <=, i, __VA_ARGS__)
 
+ICMP_ALL(ICMP_SCALAR, 32)
+ICMP_ALL(ICMP_SCALAR, 64)
 ICMP_ALL(ICMP_VEC, u8, 8, 8)
 ICMP_ALL(ICMP_VEC, u8, 4, 16)
 ICMP_ALL(ICMP_VEC, u8, 2, 32)
@@ -476,7 +484,7 @@ ICMP_ALL(ICMP_VEC, u8, 8, 16)
 ICMP_ALL(ICMP_VEC, u8, 4, 32)
 ICMP_ALL(ICMP_VEC, u8, 2, 64)
 
-u64 TARGET_V1 insert_vi1(u64 v, unsigned n, bool e) { return v & ~((u64)1 << n) | ((u64)e << n); }
+u64 TARGET_V1 insert_vi1(u64 v, unsigned n, u64 e) { return v & ~((u64)1 << n) | ((u64)(e & 1) << n); }
 
 // --------------------------
 // float arithmetic
@@ -520,8 +528,11 @@ float TARGET_V1 fabsf32(float a) { return __builtin_fabsf(a); }
 double TARGET_V1 fabsf64(double a) { return __builtin_fabs(a); }
 fp128 TARGET_V1 fabsf128(fp128 a) { return __builtin_fabsf128(a); }
 
-float TARGET_V1 fmaf32(float a, float b, float c) { return a * b + c; }
-double TARGET_V1 fmaf64(double a, double b, double c) { return a * b + c; }
+float TARGET_V1 fmuladdf32(float a, float b, float c) { return a * b + c; }
+double TARGET_V1 fmuladdf64(double a, double b, double c) { return a * b + c; }
+v2f32 TARGET_V1 fmuladdv2f32(v2f32 a, v2f32 b, v2f32 c) { return a * b + c; }
+v4f32 TARGET_V1 fmuladdv4f32(v4f32 a, v4f32 b, v4f32 c) { return a * b + c; }
+v2f64 TARGET_V1 fmuladdv2f64(v2f64 a, v2f64 b, v2f64 c) { return a * b + c; }
 
 float TARGET_V1 copysignf32(float a, float b) { return __builtin_copysignf(a, b); }
 double TARGET_V1 copysignf64(double a, double b) { return __builtin_copysign(a, b); }
@@ -720,7 +731,13 @@ double TARGET_V1 atomic_max_f64_seqcst(double *p, double v) { return __atomic_fe
 void TARGET_V1 fence_acq(void) { __atomic_thread_fence(__ATOMIC_ACQUIRE); }
 void TARGET_V1 fence_rel(void) { __atomic_thread_fence(__ATOMIC_RELEASE); }
 void TARGET_V1 fence_acqrel(void) { __atomic_thread_fence(__ATOMIC_ACQ_REL); }
+#ifdef __x86_64__
+// LLVM 21+ uses lock or [rsp+64], 0, which is more efficient, but unsupported
+// by encodegen.
+void TARGET_V1 fence_seqcst(void) { __builtin_ia32_mfence(); }
+#else
 void TARGET_V1 fence_seqcst(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+#endif
 
 // --------------------------
 // select

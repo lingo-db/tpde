@@ -13,7 +13,6 @@ define float @ceilf32(float %0) {
 ; X64-LABEL: <ceilf32>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    call <L0>
@@ -23,14 +22,11 @@ define float @ceilf32(float %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <ceilf32>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    bl 0x30 <ceilf32+0x10>
+; ARM64-NEXT:    bl 0x8 <ceilf32+0x8>
 ; ARM64-NEXT:     R_AARCH64_CALL26 ceilf
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
   %1 = call float @llvm.ceil.f32(float %0)
@@ -41,7 +37,6 @@ define double @ceilf64(double %0) {
 ; X64-LABEL: <ceilf64>:
 ; X64:         push rbp
 ; X64-NEXT:    mov rbp, rsp
-; X64-NEXT:    nop word ptr [rax + rax]
 ; X64-NEXT:    sub rsp, 0x30
 ; X64-NEXT:  <L0>:
 ; X64-NEXT:    call <L0>
@@ -51,14 +46,11 @@ define double @ceilf64(double %0) {
 ; X64-NEXT:    ret
 ;
 ; ARM64-LABEL: <ceilf64>:
-; ARM64:         sub sp, sp, #0xa0
-; ARM64-NEXT:    stp x29, x30, [sp]
+; ARM64:         stp x29, x30, [sp, #-0xa0]!
 ; ARM64-NEXT:    mov x29, sp
-; ARM64-NEXT:    nop
-; ARM64-NEXT:    bl 0x70 <ceilf64+0x10>
+; ARM64-NEXT:    bl 0x28 <ceilf64+0x8>
 ; ARM64-NEXT:     R_AARCH64_CALL26 ceil
-; ARM64-NEXT:    ldp x29, x30, [sp]
-; ARM64-NEXT:    add sp, sp, #0xa0
+; ARM64-NEXT:    ldp x29, x30, [sp], #0xa0
 ; ARM64-NEXT:    ret
 entry:
   %1 = call double @llvm.ceil.f64(double %0)
