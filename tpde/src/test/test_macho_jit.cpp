@@ -23,25 +23,15 @@ namespace {
 using namespace tpde;
 using namespace tpde::test;
 
-// Mach-O / Darwin variant of the AArch64 platform config. Identical to the
-// stock `a64::PlatformConfig` except for the `Assembler` typedef. The default
-// `CCAssignerAAPCS` works for the trivial `add(a,b)` test — both AAPCS and
-// darwinpcs put the first two integer args in `x0`/`x1` and the return value
-// in `x0`, so register-only calls match. Variadic / large-aggregate cases
-// will need a real `CCAssignerDarwinAArch64` (M3).
-struct PlatformConfigDarwin : a64::PlatformConfig {
-  using Assembler = tpde::macho::AssemblerMachOA64;
-};
-
 struct TestIRCompilerA64Darwin
     : a64::CompilerA64<TestIRAdaptor,
                        TestIRCompilerA64Darwin,
                        CompilerBase,
-                       PlatformConfigDarwin> {
+                       a64::PlatformConfigDarwin> {
   using Base = a64::CompilerA64<TestIRAdaptor,
                                 TestIRCompilerA64Darwin,
                                 CompilerBase,
-                                PlatformConfigDarwin>;
+                                a64::PlatformConfigDarwin>;
 
   explicit TestIRCompilerA64Darwin(TestIRAdaptor *adaptor) : Base{adaptor} {}
 
@@ -54,7 +44,7 @@ struct TestIRCompilerA64Darwin
   struct ValueParts {
     static u32 count() { return 1; }
     static u32 size_bytes(u32) { return 8; }
-    static RegBank reg_bank(u32) { return PlatformConfigDarwin::GP_BANK; }
+    static RegBank reg_bank(u32) { return a64::PlatformConfigDarwin::GP_BANK; }
   };
   ValueParts val_parts(IRValueRef) { return ValueParts{}; }
 
@@ -134,6 +124,12 @@ struct TestIRCompilerA64Darwin
 
 } // namespace
 
+// Host-side C function we'll resolve from JIT'd code below to exercise
+// the cross-DSO call path. Marked `extern "C"` so the JIT can request it
+// by an unmangled name. Marked `__attribute__((used))` so even at -O3
+// the compiler doesn't optimize it away as unreachable from main().
+extern "C" __attribute__((used)) u64 host_doubler(u64 x) { return x * 2; }
+
 // Compile, JIT-link, and call a TPDE test-IR snippet. Returns the named
 // function as a typed function pointer; the mapper is *retained* in `out`
 // so the JIT pages stay mapped for the duration of the call.
@@ -154,6 +150,11 @@ static Fn jit_compile(const char *src,
   }
   bool ok = out.map(compiler.assembler,
                     [](std::string_view name) -> void * {
+                      // Host-side functions exposed for the cross-DSO test.
+                      if (name == "host_doubler") {
+                        return reinterpret_cast<void *>(&host_doubler);
+                      }
+                      // Anything else is unexpected for these test cases.
                       std::fprintf(stderr,
                                    "test: unexpected resolver call '%.*s'\n",
                                    int(name.size()), name.data());
@@ -241,7 +242,33 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // ----- Case 2: intra-module call (exercises ARM64_RELOC_BRANCH26) ---------
+  // ----- Case 2: cross-DSO call to a host C function -----------------------
+  // Exercises the JIT mapper's symbol resolver + dynamic loader path:
+  // calls `host_doubler` (defined in this binary) from JIT'd code, which
+  // forces the mapper to (a) recognize an undefined external, (b) resolve
+  // it via the resolver callback, (c) install a PLT trampoline since the
+  // host symbol is potentially outside ±128 MiB BRANCH26 range. Same
+  // calling-convention pathway darwinpcs uses for libSystem calls.
+  {
+    macho::MachOMapper mapper;
+    auto fn = jit_compile<u64 (*)(u64)>(
+        "declare @host_doubler(%a)\n"
+        "define @bridge(%x) {\n"
+        "entry:\n"
+        "  %r = call @host_doubler, %x\n"
+        "  ret %r\n"
+        "}\n",
+        "bridge", mapper);
+    u64 r = fn(21);
+    std::printf("bridge(21) = %llu\n", static_cast<unsigned long long>(r));
+    if (r != 42) {
+      std::fprintf(stderr, "FAIL: expected 42, got %llu\n",
+                   static_cast<unsigned long long>(r));
+      return 1;
+    }
+  }
+
+  // ----- Case 3: intra-module call (exercises ARM64_RELOC_BRANCH26) ---------
   // `caller(x) -> add(x, x) + x` — caller invokes add, both live in the same
   // JIT region. The branch fits easily within 128 MiB so no PLT trampoline
   // is needed; the BRANCH26 relocation is resolved in-place.

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "tpde/AssemblerElf.hpp"
+#include "tpde/AssemblerMachO.hpp"
 #include "tpde/AssignmentPartRef.hpp"
 #include "tpde/CompilerBase.hpp"
 #include "tpde/DWARF.hpp"
@@ -214,7 +215,12 @@ class CCAssignerAAPCS : public CCAssigner {
   u32 ret_ngrn = 0, ret_nsrn = 0;
 
 public:
-  CCAssignerAAPCS() : CCAssigner(Info) {}
+  // The `variable_args` parameter is ignored for AAPCS-Linux: variadic
+  // and named args follow the same passing convention. Accepted only to
+  // keep the constructor signature in lockstep with darwinpcs and the
+  // x86-64 SysV variant, so the same Config-driven `generate_call`
+  // template can hand it the flag without per-target dispatch.
+  CCAssignerAAPCS(bool /*variable_args*/ = false) : CCAssigner(Info) {}
 
   void reset() override { ngrn = nsrn = nsaa = ret_ngrn = ret_nsrn = 0; }
 
@@ -283,10 +289,186 @@ public:
   }
 };
 
+/// AArch64 Darwin / Apple-AAPCS64 (`darwinpcs`) calling convention.
+///
+/// Differences from `CCAssignerAAPCS` (rough plan §4.4):
+///   - **x18 is reserved as the platform register** and must not be
+///     allocatable (Apple kernel uses it for per-CPU data).
+///   - **Variadic args go on the stack** unconditionally. Named args
+///     still consume registers per AAPCS; once the variadic portion
+///     starts, every subsequent arg is placed on the stack at natural
+///     alignment after the named-args register usage. (Today TPDE's
+///     `add_arg` doesn't carry a per-arg "is variadic" flag, so the
+///     simplification we make here is: when the call is variadic, treat
+///     **all** args as variadic — i.e., everything on stack. Real-world
+///     printf-style calls violate this; lifting `add_arg` to a per-arg
+///     variadic tag is a follow-up.)
+///   - **Stack args use natural alignment**, not the AAPCS 8-byte
+///     minimum. For now we still align to 8 because the existing test IR
+///     is 8-byte-typed; per-type natural alignment matters once
+///     sub-8-byte types reach the assigner (a `tpde-llvm` task).
+///   - `long double` is `double` (8 bytes) instead of 128-bit; handled
+///     at the LLVM frontend boundary, not in the assigner.
+class CCAssignerDarwinAArch64 : public CCAssigner {
+  static constexpr CCInfo Info{
+      // Reserve SP, FP, R16, R17 (TPDE scratch), and R18 (Apple platform
+      // register) — drop x18 from the AAPCS allocatable mask.
+      .allocatable_regs =
+          0xFFFF'FFFF'FFFF'FFFF &
+          ~create_bitmask(
+              {AsmReg::SP, AsmReg::FP, AsmReg::R16, AsmReg::R17, AsmReg::R18}),
+      // Same callee-saved set as AAPCS-Linux (x18 is a platform register
+      // on Darwin, not a CSR — its value is preserved across calls by the
+      // OS, not by the callee).
+      .callee_saved_regs = create_bitmask({
+          AsmReg::R19,
+          AsmReg::R20,
+          AsmReg::R21,
+          AsmReg::R22,
+          AsmReg::R23,
+          AsmReg::R24,
+          AsmReg::R25,
+          AsmReg::R26,
+          AsmReg::R27,
+          AsmReg::R28,
+          AsmReg::V8,
+          AsmReg::V9,
+          AsmReg::V10,
+          AsmReg::V11,
+          AsmReg::V12,
+          AsmReg::V13,
+          AsmReg::V14,
+          AsmReg::V15,
+      }),
+      .arg_regs = create_bitmask({
+          AsmReg::R0,
+          AsmReg::R1,
+          AsmReg::R2,
+          AsmReg::R3,
+          AsmReg::R4,
+          AsmReg::R5,
+          AsmReg::R6,
+          AsmReg::R7,
+          AsmReg::R8, // sret
+          AsmReg::V0,
+          AsmReg::V1,
+          AsmReg::V2,
+          AsmReg::V3,
+          AsmReg::V4,
+          AsmReg::V5,
+          AsmReg::V6,
+          AsmReg::V7,
+      }),
+  };
+
+  u32 ngrn = 0, nsrn = 0, nsaa = 0;
+  u32 ret_ngrn = 0, ret_nsrn = 0;
+  bool vararg = false;
+
+public:
+  CCAssignerDarwinAArch64(bool variable_args = false)
+      : CCAssigner(Info), vararg(variable_args) {}
+
+  void reset() override {
+    ngrn = nsrn = nsaa = ret_ngrn = ret_nsrn = 0;
+    // `vararg` is a property of the call/function, not per-reset state —
+    // do NOT clear it.
+  }
+
+  bool is_vararg() const override { return vararg; }
+
+  void assign_arg(CCAssignment &arg) override {
+    // Byval and sret behave like AAPCS — pointer in x8 / pointer on
+    // stack. Same wire convention.
+    if (arg.byval) [[unlikely]] {
+      nsaa = util::align_up(nsaa, arg.align < 8 ? 8 : arg.align);
+      arg.stack_off = nsaa;
+      nsaa += arg.size;
+      return;
+    }
+    if (arg.sret) [[unlikely]] {
+      arg.reg = AsmReg{AsmReg::R8};
+      return;
+    }
+
+    // darwinpcs: variadic args go on the stack. Today we approximate
+    // "the variadic portion" as "the whole call" when `vararg` is set.
+    // See class comment for the follow-up needed for true mixed
+    // named+variadic call sites (printf-style).
+    const bool force_stack = vararg;
+
+    if (arg.bank == RegBank{0}) {
+      if (arg.align > 8) {
+        ngrn = util::align_up(ngrn, 2);
+      }
+      if (!force_stack && ngrn + arg.consecutive < 8) {
+        arg.reg = Reg{AsmReg::R0 + ngrn};
+        ngrn += 1;
+      } else {
+        ngrn = 8;
+        nsaa = util::align_up(nsaa, arg.align < 8 ? 8 : arg.align);
+        arg.stack_off = nsaa;
+        nsaa += 8;
+      }
+    } else {
+      if (!force_stack && nsrn + arg.consecutive < 8) {
+        arg.reg = Reg{AsmReg::V0 + nsrn};
+        nsrn += 1;
+      } else {
+        nsrn = 8;
+        u32 size = util::align_up(arg.size, 8);
+        nsaa = util::align_up(nsaa, size);
+        arg.stack_off = nsaa;
+        nsaa += size;
+      }
+    }
+  }
+
+  u32 get_stack_size() override { return nsaa; }
+
+  void assign_ret(CCAssignment &arg) override {
+    assert(!arg.byval && !arg.sret);
+    if (arg.bank == RegBank{0}) {
+      if (arg.align > 8) {
+        ret_ngrn = util::align_up(ret_ngrn, 2);
+      }
+      if (ret_ngrn + arg.consecutive < 8) {
+        arg.reg = Reg{AsmReg::R0 + ret_ngrn};
+        ret_ngrn += 1;
+      } else {
+        assert(false);
+      }
+    } else {
+      if (ret_nsrn + arg.consecutive < 8) {
+        arg.reg = Reg{AsmReg::V0 + ret_nsrn};
+        ret_nsrn += 1;
+      } else {
+        assert(false);
+      }
+    }
+  }
+};
+
 struct PlatformConfig : CompilerConfigDefault {
   using Assembler = tpde::elf::AssemblerElfA64;
   using AsmReg = tpde::a64::AsmReg;
   using DefaultCCAssigner = CCAssignerAAPCS;
+  using FunctionWriter = FunctionWriterA64;
+
+  static constexpr RegBank GP_BANK{0};
+  static constexpr RegBank FP_BANK{1};
+  static constexpr bool FRAME_INDEXING_NEGATIVE = false;
+  static constexpr u32 PLATFORM_POINTER_SIZE = 8;
+  static constexpr u32 NUM_BANKS = 2;
+};
+
+/// macOS / Apple Silicon variant of `PlatformConfig`. Differs only in the
+/// assembler and the calling convention (darwinpcs); same instruction
+/// selection / stack discipline as Linux AArch64.
+struct PlatformConfigDarwin : CompilerConfigDefault {
+  using Assembler = tpde::macho::AssemblerMachOA64;
+  using AsmReg = tpde::a64::AsmReg;
+  using DefaultCCAssigner = CCAssignerDarwinAArch64;
   using FunctionWriter = FunctionWriterA64;
 
   static constexpr RegBank GP_BANK{0};
@@ -1936,8 +2118,13 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::generate_call(
     std::variant<SymRef, ValuePart> &&target,
     std::span<CallArg> arguments,
     typename Base::ValueRef *result,
-    bool) {
-  CCAssignerAAPCS assigner;
+    bool variable_args) {
+  // Use the platform-config-supplied default assigner so the same
+  // codegen template drives both Linux/AAPCS and Darwin/darwinpcs. The
+  // `(bool)` constructor lets us pass through the variadic-call flag for
+  // assigners that distinguish (CCAssignerDarwinAArch64 does;
+  // CCAssignerAAPCS ignores it).
+  typename Config::DefaultCCAssigner assigner{variable_args};
   CallBuilder cb{*derived(), assigner};
   for (auto &arg : arguments) {
     cb.add_arg(std::move(arg));
