@@ -52,7 +52,12 @@ struct TestIRCompilerA64Darwin
                                      const IRValueRef value) {
     return Base::select_fixed_assignment_reg(ap, value);
   }
-  bool try_force_fixed_assignment(const IRValueRef) const { return false; }
+  // Honor the test IR's `%a!` syntax so we can construct cases that
+  // genuinely exercise callee-save STPs (and therefore the compact
+  // unwind bitmap).
+  bool try_force_fixed_assignment(const IRValueRef value) const {
+    return ir()->values[static_cast<u32>(value)].force_fixed_assignment;
+  }
 
   std::optional<ValRefSpecial> val_ref_special(IRValueRef) { return {}; }
   ValuePart val_part_ref_special(ValRefSpecial &, u32) {
@@ -186,18 +191,33 @@ static Fn jit_compile(const char *src,
 int main(int argc, char *argv[]) {
   using AddFn = u64 (*)(u64, u64);
 
-  // Optional `--obj-out <path>` mode: emit a Mach-O .o for `add(a,b)` that
-  // can be linked with Apple `ld` / clang. Useful as an end-to-end check of
-  // the object-file writer (the JIT path doesn't go through it).
-  if (argc == 3 && std::string_view(argv[1]) == "--obj-out") {
-    TestIR ir;
-    const char *src =
+  // Optional `--obj-out <path> [<src-file>]` mode: emit a Mach-O .o for
+  // either the default `add(a,b)` IR or an IR file the user supplies.
+  // Useful as an end-to-end check of the object-file writer (the JIT
+  // path doesn't go through it).
+  if ((argc == 3 || argc == 4) &&
+      std::string_view(argv[1]) == "--obj-out") {
+    std::string src_buf =
         "define @add(%a, %b) {\n"
         "entry:\n"
         "  %res = add %a, %b\n"
         "  ret %res\n"
         "}\n";
-    if (!ir.parse_ir(src)) {
+    if (argc == 4) {
+      FILE *f = std::fopen(argv[3], "rb");
+      if (!f) {
+        std::fprintf(stderr, "cannot open %s\n", argv[3]);
+        return 1;
+      }
+      src_buf.clear();
+      char buf[4096];
+      while (size_t n = std::fread(buf, 1, sizeof(buf), f)) {
+        src_buf.append(buf, n);
+      }
+      std::fclose(f);
+    }
+    TestIR ir;
+    if (!ir.parse_ir(src_buf)) {
       std::fprintf(stderr, "Failed to parse IR\n");
       return 1;
     }

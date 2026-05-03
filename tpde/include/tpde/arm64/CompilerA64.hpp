@@ -1285,6 +1285,51 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(u32 func_idx) {
   this->assembler.sym_def(func_sym, func_sec, func_start_off, func_size);
   this->text_writer.eh_end_fde();
   this->text_writer.except_encode_func();
+
+  // Compact unwind (Mach-O): one entry per function. Mode FRAME with the
+  // saved-pair bitmap when the function uses a frame pointer, otherwise
+  // mode FRAMELESS with stack_size=0 (we never grow the stack in
+  // !needs_stack_frame leaf functions). On ELF this call is a no-op.
+  //
+  // Bitmap mapping (canonical Apple ARM64 order, see rough plan §4.3.2):
+  //   bit  0: X19/X20 pair    bit  8: D8/D9 pair
+  //   bit  1: X21/X22 pair    bit  9: D10/D11 pair
+  //   bit  2: X23/X24 pair    bit 10: D12/D13 pair
+  //   bit  3: X25/X26 pair    bit 11: D14/D15 pair
+  //   bit  4: X27/X28 pair
+  //
+  // We mark a pair "saved" if either of its registers is in saved_regs —
+  // matching the prologue's pair-saving discipline (see the audit fix).
+  u32 cu_encoding;
+  if (needs_stack_frame) {
+    cu_encoding = 0x04000000u; // UNWIND_ARM64_MODE_FRAME
+    constexpr struct {
+      u8 first, second;
+      u32 bit;
+    } kPairBits[] = {
+        {AsmReg::R19, AsmReg::R20, 1u << 0},
+        {AsmReg::R21, AsmReg::R22, 1u << 1},
+        {AsmReg::R23, AsmReg::R24, 1u << 2},
+        {AsmReg::R25, AsmReg::R26, 1u << 3},
+        {AsmReg::R27, AsmReg::R28, 1u << 4},
+        {AsmReg::V8, AsmReg::V9, 1u << 8},
+        {AsmReg::V10, AsmReg::V11, 1u << 9},
+        {AsmReg::V12, AsmReg::V13, 1u << 10},
+        {AsmReg::V14, AsmReg::V15, 1u << 11},
+    };
+    for (const auto &pb : kPairBits) {
+      const u64 mask = (u64{1} << pb.first) | (u64{1} << pb.second);
+      if (saved_regs & mask) {
+        cu_encoding |= pb.bit;
+      }
+    }
+  } else {
+    // UNWIND_ARM64_MODE_FRAMELESS = 0x02000000; bits 12..23 hold the
+    // stack-size in 16-byte units (zero here — leaf with no allocation).
+    cu_encoding = 0x02000000u;
+  }
+  this->assembler.emit_compact_unwind_entry(func_sym, u32(func_size),
+                                            cu_encoding);
 }
 
 template <IRAdaptor Adaptor,

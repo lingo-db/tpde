@@ -191,6 +191,17 @@ public:
   static constexpr u32 RELOC_TLSDESC_CALL = ~u32(0);
 
   AssemblerMachOA64() : AssemblerMachO(TARGET_INFO) {}
+
+  /// Emit one 32-byte `compact_unwind_entry` for the function `func`
+  /// into `__LD,__compact_unwind`:
+  ///   { uint64_t function_address;   // ARM64_RELOC_UNSIGNED to func
+  ///     uint32_t length;              // function size in bytes
+  ///     uint32_t encoding;            // see UNWIND_ARM64_MODE_*
+  ///     uint64_t personality_function; // 0 (M4 follow-up)
+  ///     uint64_t lsda;                 // 0 (M4 follow-up) }
+  /// `encoding` is computed by the caller from the actual prologue
+  /// shape (see `compute_compact_unwind_encoding` in CompilerA64).
+  void emit_compact_unwind_entry(SymRef func, u32 func_size, u32 encoding);
 };
 
 } // namespace tpde::macho

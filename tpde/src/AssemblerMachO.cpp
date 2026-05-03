@@ -63,6 +63,8 @@ constexpr MachOSectionDescr SECTION_DESCR[unsigned(SectionKind::Max)] = {
     {"__DATA", "__thread_data", S_THREAD_LOCAL_REGULAR, 0, true, false},
     /* ThreadBSS  */
     {"__DATA", "__thread_bss", S_THREAD_LOCAL_ZEROFILL, 0, false, true},
+    /* CompactUnwind */
+    {"__LD", "__compact_unwind", S_REGULAR, 3, true, false},
 };
 
 consteval auto get_macho_section_flags() {
@@ -205,20 +207,21 @@ std::vector<u8> AssemblerMachO::build_object_file() {
   util::SmallVector<EmitSec, 8> emit_secs;
   emit_secs.reserve(sections.size());
 
-  // The framework's `FunctionWriter::eh_init_cie` always emits a CIE (and
-  // per-function FDEs) to `SectionKind::EHFrame`, even for functions that
-  // don't actually need unwind info. On Mach-O the proper home for unwind
-  // info is `__LD,__compact_unwind` — `__TEXT,__eh_frame` is a fallback
-  // that's tricky to encode and that Apple `ld` validates very strictly
-  // (e.g., it scans FDEs and checks each function pointer against symbol
-  // tables). Until the compact-unwind emitter lands (M4), skip emitting
-  // `__eh_frame` from the produced `.o` so trivial leaf functions can be
-  // linked without phantom unwind records. The JIT path is unaffected:
-  // `MachOMapper` consumes the in-memory section list, not this object
-  // file, and ignores eh_frame entries it doesn't need.
-  // TODO(tpde-macos M4): emit compact-unwind entries in lieu of eh_frame,
-  // and only fall back to eh_frame for prologues that exceed the compact
-  // encoding's expressive range.
+  // Unwind info on Mach-O: `__LD,__compact_unwind` is the primary path
+  // (emitted by `CompilerA64::finish_func` via
+  // `emit_compact_unwind_entry`); `__TEXT,__eh_frame` is the DWARF
+  // fallback. Apple `ld` validates eh_frame FDE func-pointers very
+  // strictly and expects the SUBTRACTOR+UNSIGNED pair to reference
+  // *local synthetic symbols* (Lfde_begin / Lfunc_begin in LLVM's
+  // emission), not section-ordinal references. We don't synthesize
+  // those local anchors yet, so the DWARF FDE the framework's
+  // `eh_init_cie` writes can't be linked cleanly. Drop eh_frame from
+  // the produced `.o` for now — every leaf/frame-mode prologue is
+  // representable in compact unwind, which `ld` and the runtime
+  // unwinder accept on their own.
+  // TODO(tpde-macos M4 follow-up): emit per-FDE local anchors so
+  // eh_frame can serve as a fallback for prologues outside compact
+  // expressivity (e.g., personality+LSDA cases once EH lands).
   SecRef ehframe_ref = default_sections[unsigned(SectionKind::EHFrame)];
 
   for (size_t i = 0; i < sections.size(); ++i) {
@@ -689,6 +692,34 @@ std::vector<u8> AssemblerMachO::build_object_file() {
   }
 
   return out;
+}
+
+void AssemblerMachOA64::emit_compact_unwind_entry(SymRef func,
+                                                  u32 func_size,
+                                                  u32 encoding) {
+  // Allocate the 32-byte `compact_unwind_entry` in `__LD,__compact_unwind`.
+  // Layout matches Apple's struct: function_address (8B), length (4B),
+  // encoding (4B), personality (8B), lsda (8B).
+  SecRef sec_ref = get_default_section(SectionKind::CompactUnwind);
+  DataSection &sec = get_section(sec_ref);
+  u32 entry_off = u32(util::align_up(sec.data.size(), 8));
+  // Pad to 8-byte alignment before appending the entry.
+  if (entry_off > sec.data.size()) {
+    sec.data.resize(entry_off);
+  }
+  sec.data.resize_uninitialized(entry_off + 32);
+  u8 *p = sec.data.data() + entry_off;
+  std::memset(p, 0, 32);
+  // function_address starts as zero; the relocation provides the real
+  // value. length and encoding are written directly — the linker leaves
+  // them alone.
+  std::memcpy(p + 8, &func_size, sizeof(u32));
+  std::memcpy(p + 12, &encoding, sizeof(u32));
+
+  // ARM64_RELOC_UNSIGNED, length=3 (8 bytes), pcrel=0, against the
+  // function symbol with addend 0. The Mach-O writer turns this into
+  // the standard r_extern=1 reloc form.
+  reloc_sec(sec_ref, func, ARM64_RELOC_UNSIGNED, entry_off, 0);
 }
 
 // ---------------------------------------------------------------------------

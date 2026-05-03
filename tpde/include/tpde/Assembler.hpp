@@ -62,6 +62,11 @@ enum class SectionKind : u8 {
   BSS,        ///< Zero-initialized data section (ELF .bss)
   ThreadData, ///< Initialized thread-local data section (ELF .tdata)
   ThreadBSS,  ///< Zero-initialized thread-local data section (ELF .tbss)
+  /// Mach-O `__LD,__compact_unwind`: array of 32-byte unwind records
+  /// keyed on function address. No analogue on ELF (ELF puts unwind info
+  /// in `.eh_frame` exclusively); included here so the section-flags
+  /// table indexes line up. ELF treats this entry as unused.
+  CompactUnwind,
 
   Max
 };

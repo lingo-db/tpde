@@ -199,6 +199,14 @@ public:
   static constexpr u32 RELOC_TLSDESC_CALL = R_AARCH64_TLSDESC_CALL;
 
   explicit AssemblerElfA64() : AssemblerElf(TARGET_INFO) {}
+
+  /// No-op on ELF — unwind info on this back-end lives entirely in
+  /// `.eh_frame` and is emitted by `FunctionWriter::eh_*`. Provided so
+  /// `CompilerA64::finish_func` can call it unconditionally regardless
+  /// of which assembler `Config::Assembler` resolves to.
+  void emit_compact_unwind_entry(SymRef /*func*/,
+                                 u32 /*func_size*/,
+                                 u32 /*encoding*/) {}
 };
 
 class AssemblerElfX64 final : public AssemblerElf {

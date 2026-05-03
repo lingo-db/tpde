@@ -522,6 +522,10 @@ static consteval auto get_elf_section_flags() {
                    .name = sec_off(".tbss"),
                    .has_relocs = false,
                    .is_bss = true};
+  // CompactUnwind has no ELF counterpart; leave the slot zero-initialized.
+  // Code that requests it on ELF is a logic bug — `emit_compact_unwind_entry`
+  // is a no-op on AssemblerElf, so the section is never created.
+  section_flags[u8(SectionKind::CompactUnwind)] = SectionFlags{};
   return section_flags;
 }
 
