@@ -79,6 +79,8 @@ struct JitImage {
   uintptr_t dso_base;
   uintptr_t cu_addr;
   size_t cu_size;
+  uintptr_t eh_frame_addr;
+  size_t eh_frame_size;
 };
 
 std::mutex g_jit_images_mutex;
@@ -99,8 +101,16 @@ int find_unwind_for_jit_pc(uintptr_t addr, UnwindDynamicSections *out) {
   for (const auto &img : g_jit_images) {
     if (addr >= img.text_start && addr < img.text_end) {
       out->dso_base = img.dso_base;
-      out->dwarf_section = 0; // No eh_frame fallback yet (M4 follow-up).
-      out->dwarf_section_length = 0;
+      // Hand libunwind both unwind sources: it consults
+      // __compact_unwind first (entry-by-entry lookup); when that
+      // doesn't find the PC or the encoding is MODE_DWARF, it falls
+      // back to walking eh_frame for an FDE. C++ exception search
+      // (`_Unwind_RaiseException` Phase 1) needs eh_frame in
+      // particular, since Apple's libunwind for dynamic sections
+      // doesn't reconstruct the linker-synthesized __unwind_info
+      // page table from raw __compact_unwind records.
+      out->dwarf_section = img.eh_frame_addr;
+      out->dwarf_section_length = img.eh_frame_size;
       out->compact_unwind_section = img.cu_addr;
       out->compact_unwind_section_length = img.cu_size;
       g_unwind_callback_hits.fetch_add(1, std::memory_order_relaxed);
@@ -124,17 +134,18 @@ void init_unwind_callbacks_once() {
 }
 
 void register_jit_image(uintptr_t text_start, uintptr_t text_end,
-                        uintptr_t dso_base, u8 *cu_data, size_t cu_size) {
+                        uintptr_t dso_base, u8 *cu_data, size_t cu_size,
+                        u8 *eh_data, size_t eh_size) {
   std::call_once(g_unw_init_flag, init_unwind_callbacks_once);
   if (!g_unw_add) {
     // Dynamic API missing on this system — silently degrade. Future
-    // work: synthesize an `__eh_frame` blob and `__register_frame`
-    // each FDE for older macOS.
+    // work: fall back to `__register_frame` per-FDE for older macOS.
     return;
   }
   std::lock_guard<std::mutex> lock(g_jit_images_mutex);
   g_jit_images.push_back({text_start, text_end, dso_base,
-                          uintptr_t(cu_data), cu_size});
+                          uintptr_t(cu_data), cu_size,
+                          uintptr_t(eh_data), eh_size});
 }
 
 void unregister_jit_image(uintptr_t text_start) {
@@ -185,10 +196,12 @@ void MachOMapper::reset() {
   if (!mapped_addr) {
     return;
   }
-  if (cu_section_addr) {
+  if (cu_section_addr || eh_frame_addr) {
     unregister_jit_image(reinterpret_cast<uintptr_t>(mapped_addr));
     cu_section_addr = nullptr;
     cu_section_size = 0;
+    eh_frame_addr = nullptr;
+    eh_frame_size = 0;
   }
   ::munmap(mapped_addr, mapped_size);
   mapped_addr = nullptr;
@@ -513,29 +526,50 @@ bool MachOMapper::map(AssemblerMachO &assembler, SymbolResolver resolver) {
     if (sec.size() == 0) {
       continue;
     }
-    // The (segname, sectname) names live in the SECTION_DESCR table by
-    // index; the simplest discriminator we have here is the original
-    // SectionKind value via the `name` field, which AssemblerMachO sets
-    // to `unsigned(SectionKind)`. The `__compact_unwind` slot is index
-    // `SectionKind::CompactUnwind`.
+    // The (segname, sectname) names live in the SECTION_DESCR table
+    // by index; the simplest discriminator is the SectionKind value
+    // via the `name` field that AssemblerMachO sets at section
+    // creation. Pick up the eh_frame data while we're here too —
+    // libunwind needs it as a fallback when its compact-unwind
+    // dynamic-section path doesn't cover a PC (e.g., during C++
+    // exception propagation).
+    if (sec.name == unsigned(SectionKind::EHFrame)) {
+      eh_frame_addr = mapped_addr + sec.addr;
+      eh_frame_size = sec.size();
+      continue;
+    }
     if (sec.name != unsigned(SectionKind::CompactUnwind)) {
       continue;
     }
     cu_section_addr = mapped_addr + sec.addr;
     cu_section_size = sec.size();
-    // Walk 32-byte entries. function_address is at offset 0.
+    // Walk 32-byte entries and convert to libunwind's
+    // dynamic-registration convention: function_address, personality,
+    // and lsda are all stored as dso_base-relative offsets. libunwind
+    // re-adds `dso_base` (which we set to `mapped_addr`) when
+    // consulting the entry. The framework's `emit_compact_unwind_entry`
+    // wrote them as absolute pointers via `ARM64_RELOC_UNSIGNED`, so
+    // we subtract dso_base here. Personality functions typically live
+    // in libc++abi (way outside the JIT region) — that's fine, the
+    // subtraction yields a large signed offset and the runtime adds
+    // it back. Zero values stay zero.
     constexpr size_t kEntrySize = 32;
     assert(cu_section_size % kEntrySize == 0 &&
            "compact_unwind section size must be a multiple of 32");
     uintptr_t dso_base = reinterpret_cast<uintptr_t>(mapped_addr);
+    auto relativize = [&](u8 *p) {
+      uintptr_t v;
+      std::memcpy(&v, p, sizeof(uintptr_t));
+      if (v) {
+        v -= dso_base;
+        std::memcpy(p, &v, sizeof(uintptr_t));
+      }
+    };
     for (size_t off = 0; off < cu_section_size; off += kEntrySize) {
       u8 *entry = cu_section_addr + off;
-      uintptr_t abs;
-      std::memcpy(&abs, entry, sizeof(uintptr_t));
-      uintptr_t rel = abs - dso_base;
-      std::memcpy(entry, &rel, sizeof(uintptr_t));
-      // Personality (offset 16) and LSDA (offset 24) are zero today;
-      // when M4 follow-up wires them up they'll need the same fix-up.
+      relativize(entry + 0);  // function_address
+      relativize(entry + 16); // personality
+      relativize(entry + 24); // lsda
     }
     break; // only one compact_unwind section per assembler
   }
@@ -556,11 +590,12 @@ bool MachOMapper::map(AssemblerMachO &assembler, SymbolResolver resolver) {
   // PLT trampoline addresses) just fall through to "no info", which is
   // correct: the trampolines are leaf-and-tail-call so the unwinder
   // doesn't try to step out of them.
-  if (cu_section_addr) {
+  if (cu_section_addr || eh_frame_addr) {
     register_jit_image(reinterpret_cast<uintptr_t>(mapped_addr),
                        reinterpret_cast<uintptr_t>(mapped_addr + mapped_size),
                        reinterpret_cast<uintptr_t>(mapped_addr),
-                       cu_section_addr, cu_section_size);
+                       cu_section_addr, cu_section_size,
+                       eh_frame_addr, eh_frame_size);
   }
 
   return true;

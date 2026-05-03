@@ -1328,8 +1328,30 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(u32 func_idx) {
     // stack-size in 16-byte units (zero here — leaf with no allocation).
     cu_encoding = 0x02000000u;
   }
+
+  // Personality + LSDA. For pass-through frames (no catch / cleanup
+  // of their own) Apple's libunwind walks them based on the
+  // MODE_FRAME / MODE_FRAMELESS encoding alone — no personality
+  // needed. This matches what clang emits for
+  // `extern "C" void f() { thrower(); }`-style trampolines:
+  // encoding is plain 0x04000000 with personality slot zero.
+  //
+  // The hooks are wired through to `emit_compact_unwind_entry` for
+  // when the user's compiler has an actual personality (or future
+  // work emits LSDA). bits 28..29 = personality_index (1 means "use
+  // the per-image personality table slot 0"), bit 30 = HAS_LSDA.
+  SymRef personality_sym = derived()->cur_personality_func();
+  SymRef lsda_sym; // TODO(tpde-macos M4 follow-up): wire LSDA when
+                   // the function has cleanup/catch ranges.
+  if (personality_sym.valid()) {
+    cu_encoding |= 1u << 28; // personality_index = 1
+  }
+  if (lsda_sym.valid()) {
+    cu_encoding |= 0x40000000u; // UNWIND_HAS_LSDA
+  }
   this->assembler.emit_compact_unwind_entry(func_sym, u32(func_size),
-                                            cu_encoding);
+                                            cu_encoding,
+                                            personality_sym, lsda_sym);
 }
 
 template <IRAdaptor Adaptor,

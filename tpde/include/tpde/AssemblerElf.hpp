@@ -216,7 +216,9 @@ public:
   /// of which assembler `Config::Assembler` resolves to.
   void emit_compact_unwind_entry(SymRef /*func*/,
                                  u32 /*func_size*/,
-                                 u32 /*encoding*/) {}
+                                 u32 /*encoding*/,
+                                 SymRef /*personality*/ = SymRef(),
+                                 SymRef /*lsda*/ = SymRef()) {}
 };
 
 class AssemblerElfX64 final : public AssemblerElf {

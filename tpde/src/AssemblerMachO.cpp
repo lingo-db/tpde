@@ -779,7 +779,9 @@ std::vector<u8> AssemblerMachO::build_object_file() {
 
 void AssemblerMachOA64::emit_compact_unwind_entry(SymRef func,
                                                   u32 func_size,
-                                                  u32 encoding) {
+                                                  u32 encoding,
+                                                  SymRef personality,
+                                                  SymRef lsda) {
   // Allocate the 32-byte `compact_unwind_entry` in `__LD,__compact_unwind`.
   // Layout matches Apple's struct: function_address (8B), length (4B),
   // encoding (4B), personality (8B), lsda (8B).
@@ -794,15 +796,30 @@ void AssemblerMachOA64::emit_compact_unwind_entry(SymRef func,
   u8 *p = sec.data.data() + entry_off;
   std::memset(p, 0, 32);
   // function_address starts as zero; the relocation provides the real
-  // value. length and encoding are written directly — the linker leaves
-  // them alone.
+  // value. length and encoding are written directly — the linker
+  // leaves them alone.
   std::memcpy(p + 8, &func_size, sizeof(u32));
   std::memcpy(p + 12, &encoding, sizeof(u32));
 
-  // ARM64_RELOC_UNSIGNED, length=3 (8 bytes), pcrel=0, against the
-  // function symbol with addend 0. The Mach-O writer turns this into
-  // the standard r_extern=1 reloc form.
+  // function_address: ARM64_RELOC_UNSIGNED, length=3 (8 bytes),
+  // pcrel=0, against the function symbol with addend 0.
   reloc_sec(sec_ref, func, ARM64_RELOC_UNSIGNED, entry_off, 0);
+
+  // Personality (offset 16): pointer to the personality function.
+  // libunwind needs a non-zero personality on any frame that should
+  // participate in C++ exception unwinding — even pass-through
+  // frames between throw and catch. The personality_index bits
+  // (28..29) in `encoding` are the caller's responsibility.
+  if (personality.valid()) {
+    reloc_sec(sec_ref, personality, ARM64_RELOC_UNSIGNED, entry_off + 16, 0);
+  }
+
+  // LSDA (offset 24): pointer to the language-specific data area.
+  // Only relevant for frames with catch clauses or cleanups. The
+  // `UNWIND_HAS_LSDA` encoding bit is the caller's responsibility.
+  if (lsda.valid()) {
+    reloc_sec(sec_ref, lsda, ARM64_RELOC_UNSIGNED, entry_off + 24, 0);
+  }
 }
 
 // ---------------------------------------------------------------------------

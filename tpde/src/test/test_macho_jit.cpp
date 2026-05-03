@@ -48,6 +48,11 @@ struct TestIRCompilerA64Darwin
 
   explicit TestIRCompilerA64Darwin(TestIRAdaptor *adaptor) : Base{adaptor} {}
 
+  // No per-function personality. The test JIT'd frames are
+  // pass-through for C++ exceptions (no catch of their own). For
+  // those, libunwind walks based on MODE_FRAME / MODE_FRAMELESS
+  // alone — same as what clang emits for an `extern "C" void f()
+  // { thrower(); }` trampoline.
   SymRef cur_personality_func() const { return {}; }
 
   bool cur_func_may_emit_calls() const {
@@ -148,6 +153,32 @@ struct TestIRCompilerA64Darwin
 // the compiler doesn't optimize it away as unreachable from main().
 extern "C" __attribute__((used)) u64 host_doubler(u64 x) { return x * 2; }
 
+// Sentinel type carrying a magic value, thrown by `host_thrower`
+// below. Using a type instead of a raw `int` so the catch-clause is
+// unambiguously the one we expect (catching `int` accidentally
+// matches a wider class of throws).
+struct UnwindProbe {
+  u64 magic;
+};
+
+// Throws unconditionally. JIT'd code calls this transitively through
+// a JIT trampoline, with the host-side test harness wrapping the
+// trampoline call in `try { ... } catch (UnwindProbe &)`. For the
+// catch to fire, the C++ runtime / libunwind must:
+//   1. Walk *out* of host_thrower's frame (host has unwind info).
+//   2. Walk *through* the JIT trampoline frame — using the
+//      compact-unwind record that `MachOMapper` registered with
+//      libunwind via `__unw_add_find_dynamic_unwind_sections`.
+//   3. Land in main's `catch` clause.
+//
+// If step 2 is broken (encoding wrong, registration missed, dso_base
+// fix-up off, ...), libunwind either aborts the process or restores
+// garbage register state — both of which the test harness would
+// surface as a failure rather than a clean catch.
+extern "C" __attribute__((noinline, used, noreturn)) void host_thrower() {
+  throw UnwindProbe{0xfeed'face'cafe'beefULL};
+}
+
 // Walk via `_Unwind_Backtrace`, which on macOS goes through libunwind
 // (and therefore consults the dynamic-section callbacks our
 // `MachOMapper` registers). `backtrace()` from <execinfo.h> would NOT
@@ -205,7 +236,16 @@ static Fn jit_compile(const char *src,
                       if (name == "host_walk_stack") {
                         return reinterpret_cast<void *>(&host_walk_stack);
                       }
-                      // Anything else is unexpected for these test cases.
+                      if (name == "host_thrower") {
+                        return reinterpret_cast<void *>(&host_thrower);
+                      }
+                      // Names like `__gxx_personality_v0` come from
+                      // libc++abi — return nullptr so the mapper
+                      // falls back to dlsym(RTLD_DEFAULT, ...). Print
+                      // anything *else* unexpected.
+                      if (name == "__gxx_personality_v0") {
+                        return nullptr;
+                      }
                       std::fprintf(stderr,
                                    "test: unexpected resolver call '%.*s'\n",
                                    int(name.size()), name.data());
@@ -416,6 +456,81 @@ int main(int argc, char *argv[]) {
     if (r != 21) {
       std::fprintf(stderr, "FAIL: expected 21, got %llu\n",
                    static_cast<unsigned long long>(r));
+      return 1;
+    }
+  }
+
+  // ----- Sanity: host->host exception works at all in this build ---------
+  {
+    bool ok = false;
+    try {
+      host_thrower();
+    } catch (UnwindProbe &p) {
+      ok = (p.magic == 0xfeed'face'cafe'beefULL);
+    } catch (...) {
+    }
+    std::printf("eh-host-only: caught=%d\n", int(ok));
+    if (!ok) {
+      std::fprintf(stderr,
+                   "FAIL: exceptions don't even work without JIT — "
+                   "build flags wrong\n");
+      return 1;
+    }
+  }
+
+  // ----- Case 5: C++ exception unwinding through a JIT'd frame -------------
+  //
+  // The strongest validation of the M4 stack. For the `catch` to fire,
+  // Apple's libunwind must:
+  //   - Step out of host_thrower (host frame; has unwind info).
+  //   - Find unwind info for the JIT'd trampoline via the dynamic
+  //     callback we registered.
+  //   - Decode the eh_frame FDE well enough to restore caller state.
+  //   - Land in main's catch handler here.
+  //
+  // The crucial bit on Apple: libunwind's dynamic-section path for
+  // *exception unwinding* falls back to eh_frame when its compact-
+  // unwind lookup doesn't reconstruct a valid handler chain (which
+  // happens here because we register raw `__LD,__compact_unwind`
+  // records, not the hierarchical `__TEXT,__unwind_info` format
+  // `ld` would synthesize). Wiring the eh_frame section through
+  // the `dwarf_section` field of `unw_dynamic_unwind_sections` lets
+  // libunwind walk our pre-existing FDE data and unwind succeeds.
+  //
+  // For backtrace-style walking (`_Unwind_Backtrace` in case 3)
+  // compact-unwind alone is enough; for C++ EH, eh_frame is the
+  // load-bearing path until proper `__unwind_info` synthesis lands.
+  {
+    macho::MachOMapper mapper;
+    auto trampoline = jit_compile<u64 (*)()>(
+        "declare @host_thrower()\n"
+        "define @jit_trampoline() {\n"
+        "entry:\n"
+        "  %r = call @host_thrower\n"
+        "  ret %r\n"
+        "}\n",
+        "jit_trampoline", mapper);
+    bool caught = false;
+    u64 caught_magic = 0;
+    try {
+      (void)trampoline();
+      std::fprintf(stderr,
+                   "FAIL: trampoline returned without throwing\n");
+      return 1;
+    } catch (UnwindProbe &p) {
+      caught = true;
+      caught_magic = p.magic;
+    } catch (...) {
+      std::fprintf(stderr,
+                   "FAIL: caught wrong exception type\n");
+      return 1;
+    }
+    std::printf("eh-jit: caught=%d magic=0x%llx\n", int(caught),
+                static_cast<unsigned long long>(caught_magic));
+    if (!caught || caught_magic != 0xfeed'face'cafe'beefULL) {
+      std::fprintf(stderr,
+                   "FAIL: exception did not propagate cleanly through "
+                   "JIT'd frame\n");
       return 1;
     }
   }

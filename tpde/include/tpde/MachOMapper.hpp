@@ -35,13 +35,15 @@ private:
   u32 local_sym_count = 0;
   util::SmallVector<void *, 64> sym_addrs;
 
-  // For libunwind dynamic registration: pointer + size of the
-  // post-relocation `__compact_unwind` payload inside the JIT region.
-  // `nullptr` if the assembler had no compact-unwind data. Used by
-  // `reset()` to deregister, and by the global `find_unwind_*` callback
-  // (see MachOMapper.cpp).
+  // For libunwind dynamic registration: pointers + sizes of the
+  // post-relocation `__compact_unwind` and `__eh_frame` payloads
+  // inside the JIT region. Either may be null if the assembler
+  // produced no data of that kind. Used by `reset()` to deregister
+  // and by the global `find_unwind_*` callback (see MachOMapper.cpp).
   u8 *cu_section_addr = nullptr;
   size_t cu_section_size = 0;
+  u8 *eh_frame_addr = nullptr;
+  size_t eh_frame_size = 0;
 
 public:
   MachOMapper() = default;

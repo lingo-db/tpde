@@ -224,14 +224,24 @@ public:
 
   /// Emit one 32-byte `compact_unwind_entry` for the function `func`
   /// into `__LD,__compact_unwind`:
-  ///   { uint64_t function_address;   // ARM64_RELOC_UNSIGNED to func
+  ///   { uint64_t function_address;    // ARM64_RELOC_UNSIGNED to func
   ///     uint32_t length;              // function size in bytes
   ///     uint32_t encoding;            // see UNWIND_ARM64_MODE_*
-  ///     uint64_t personality_function; // 0 (M4 follow-up)
-  ///     uint64_t lsda;                 // 0 (M4 follow-up) }
-  /// `encoding` is computed by the caller from the actual prologue
-  /// shape (see `compute_compact_unwind_encoding` in CompilerA64).
-  void emit_compact_unwind_entry(SymRef func, u32 func_size, u32 encoding);
+  ///     uint64_t personality_function;// 0, or UNSIGNED to personality
+  ///     uint64_t lsda;                // 0, or UNSIGNED to LSDA blob }
+  ///
+  /// If `personality` is valid, the caller is expected to OR the
+  /// personality-index bits (28..29) into `encoding` itself; this
+  /// function only writes the relocation to the personality slot. If
+  /// `lsda` is valid, this function emits its reloc and the caller
+  /// should OR `UNWIND_HAS_LSDA` (bit 30) into `encoding`. (We split
+  /// it this way so the encoding bits stay computed alongside the
+  /// saved-pair bitmap in `CompilerA64`.)
+  void emit_compact_unwind_entry(SymRef func,
+                                 u32 func_size,
+                                 u32 encoding,
+                                 SymRef personality = SymRef(),
+                                 SymRef lsda = SymRef());
 };
 
 } // namespace tpde::macho
