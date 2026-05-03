@@ -136,6 +136,12 @@ void LLVMCompilerArm64Darwin::load_address_of_var_reference(
 
 std::optional<LLVMCompilerArm64Darwin::CallBuilder>
     LLVMCompilerArm64Darwin::create_call_builder(const llvm::CallBase *cb) {
+  // Pass `vararg` through to the assigner — unlike AAPCS, darwinpcs
+  // splits register vs stack placement based on whether the call
+  // target is variadic. With the simplified flag we treat "variadic
+  // call" as "all args go on stack" (rough plan §M3 follow-up: per-
+  // arg variadic flag for proper named/variadic split).
+  bool var_arg = cb ? cb->getFunctionType()->isVarArg() : false;
   llvm::CallingConv::ID cc = llvm::CallingConv::C;
   if (cb) {
     cc = cb->getCallingConv();
@@ -144,7 +150,7 @@ std::optional<LLVMCompilerArm64Darwin::CallBuilder>
   case llvm::CallingConv::C:
   case llvm::CallingConv::Fast:
     // On AArch6464, fastcc behaves like the C calling convention.
-    cc_assigners = tpde::a64::CCAssignerDarwinAArch64();
+    cc_assigners = tpde::a64::CCAssignerDarwinAArch64(var_arg);
     return CallBuilder{*this,
                        std::get<tpde::a64::CCAssignerDarwinAArch64>(cc_assigners)};
   default: return std::nullopt;

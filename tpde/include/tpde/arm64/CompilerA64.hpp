@@ -460,6 +460,11 @@ struct PlatformConfig : CompilerConfigDefault {
   static constexpr bool FRAME_INDEXING_NEGATIVE = false;
   static constexpr u32 PLATFORM_POINTER_SIZE = 8;
   static constexpr u32 NUM_BANKS = 2;
+  /// AAPCS: a variadic function's prologue spills x0..x7 / v0..v7
+  /// into a save area, then `va_list` walks from there. darwinpcs
+  /// passes all variadic args on the stack already, so the save
+  /// area is dead weight (~192 bytes per variadic function).
+  static constexpr bool VARARG_USES_REG_SAVE_AREA = true;
 };
 
 /// macOS / Apple Silicon variant of `PlatformConfig`. Differs only in the
@@ -476,6 +481,9 @@ struct PlatformConfigDarwin : CompilerConfigDefault {
   static constexpr bool FRAME_INDEXING_NEGATIVE = false;
   static constexpr u32 PLATFORM_POINTER_SIZE = 8;
   static constexpr u32 NUM_BANKS = 2;
+  // No `va_list` register-save area on darwinpcs; variadic args
+  // come on the stack so there's nothing to spill at function entry.
+  static constexpr bool VARARG_USES_REG_SAVE_AREA = false;
 };
 
 /// Compiler mixin for targeting AArch64.
@@ -929,22 +937,30 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_begin(
 
   // TODO(ts): support larger stack alignments?
 
-  if (this->adaptor->cur_is_vararg()) [[unlikely]] {
-    this->stack.frame_used = true;
-    reg_save_frame_off = this->stack.frame_size;
-    // We additionally store a pointer to the stack area, which we can't compute
-    // with a constant offset from the frame pointer. Add 16 bytes to maintain
-    // alignment.
-    this->stack.frame_size += 8 * 8 + 8 * 16 + 16;
-    this->text_writer.ensure_space(4 * 8);
-    ASMNC(STPx, DA_GP(0), DA_GP(1), DA_SP, reg_save_frame_off);
-    ASMNC(STPx, DA_GP(2), DA_GP(3), DA_SP, reg_save_frame_off + 16);
-    ASMNC(STPx, DA_GP(4), DA_GP(5), DA_SP, reg_save_frame_off + 32);
-    ASMNC(STPx, DA_GP(6), DA_GP(7), DA_SP, reg_save_frame_off + 48);
-    ASMNC(STPq, DA_V(0), DA_V(1), DA_SP, reg_save_frame_off + 64);
-    ASMNC(STPq, DA_V(2), DA_V(3), DA_SP, reg_save_frame_off + 96);
-    ASMNC(STPq, DA_V(4), DA_V(5), DA_SP, reg_save_frame_off + 128);
-    ASMNC(STPq, DA_V(6), DA_V(7), DA_SP, reg_save_frame_off + 160);
+  // AAPCS-Linux variadic functions need a register-save area at
+  // entry: x0..x7 and v0..v7 spilled to the stack so `va_list`'s
+  // `__gr_top` / `__vr_top` can walk register-passed varargs. On
+  // darwinpcs this is unused — all variadic args are already on the
+  // stack — so the platform config opts out and saves ~192 bytes
+  // per variadic function.
+  if constexpr (Config::VARARG_USES_REG_SAVE_AREA) {
+    if (this->adaptor->cur_is_vararg()) [[unlikely]] {
+      this->stack.frame_used = true;
+      reg_save_frame_off = this->stack.frame_size;
+      // We additionally store a pointer to the stack area, which we
+      // can't compute with a constant offset from the frame pointer.
+      // Add 16 bytes to maintain alignment.
+      this->stack.frame_size += 8 * 8 + 8 * 16 + 16;
+      this->text_writer.ensure_space(4 * 8);
+      ASMNC(STPx, DA_GP(0), DA_GP(1), DA_SP, reg_save_frame_off);
+      ASMNC(STPx, DA_GP(2), DA_GP(3), DA_SP, reg_save_frame_off + 16);
+      ASMNC(STPx, DA_GP(4), DA_GP(5), DA_SP, reg_save_frame_off + 32);
+      ASMNC(STPx, DA_GP(6), DA_GP(7), DA_SP, reg_save_frame_off + 48);
+      ASMNC(STPq, DA_V(0), DA_V(1), DA_SP, reg_save_frame_off + 64);
+      ASMNC(STPq, DA_V(2), DA_V(3), DA_SP, reg_save_frame_off + 96);
+      ASMNC(STPq, DA_V(4), DA_V(5), DA_SP, reg_save_frame_off + 128);
+      ASMNC(STPq, DA_V(6), DA_V(7), DA_SP, reg_save_frame_off + 160);
+    }
   }
 
   this->func_arg_stack_add_off = ~0u;
@@ -1012,31 +1028,35 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_end(
     CCAssigner *cc_assigner) {
   // Hack: we don't know the frame size, so for a va_start(), we cannot easily
   // compute the offset from the frame pointer. But we have a stack_reg here,
-  // so use it for var args.
-  if (this->adaptor->cur_is_vararg()) [[unlikely]] {
-    this->stack.frame_used = true;
-    AsmReg stack_reg = AsmReg::R17;
-    // TODO: allocate an actual scratch register for this.
-    assert(!(this->register_file.allocatable & (u64{1} << stack_reg.id())) &&
-           "x17 must not be allocatable");
-    if (this->func_arg_stack_add_off == ~0u) {
-      this->func_arg_stack_add_off = this->text_writer.offset();
-      this->func_arg_stack_add_reg = stack_reg;
-      // Fixed in finish_func when frame size is known
-      ASMC(this, ADDxi, stack_reg, DA_SP, 0);
-    }
-    ASM(ADDxi, stack_reg, stack_reg, cc_assigner->get_stack_size());
-    ASM(STRxu, stack_reg, DA_GP(29), this->reg_save_frame_off + 192);
+  // so use it for var args. (Skipped on darwinpcs — `va_list` is just
+  // a `char*` to the variadic stack overflow area, no save area, so
+  // there's nothing to populate here either.)
+  if constexpr (Config::VARARG_USES_REG_SAVE_AREA) {
+    if (this->adaptor->cur_is_vararg()) [[unlikely]] {
+      this->stack.frame_used = true;
+      AsmReg stack_reg = AsmReg::R17;
+      // TODO: allocate an actual scratch register for this.
+      assert(!(this->register_file.allocatable & (u64{1} << stack_reg.id())) &&
+             "x17 must not be allocatable");
+      if (this->func_arg_stack_add_off == ~0u) {
+        this->func_arg_stack_add_off = this->text_writer.offset();
+        this->func_arg_stack_add_reg = stack_reg;
+        // Fixed in finish_func when frame size is known
+        ASMC(this, ADDxi, stack_reg, DA_SP, 0);
+      }
+      ASM(ADDxi, stack_reg, stack_reg, cc_assigner->get_stack_size());
+      ASM(STRxu, stack_reg, DA_GP(29), this->reg_save_frame_off + 192);
 
-    // TODO: extract ngrn/nsrn from CCAssigner
-    // TODO: this isn't quite accurate, e.g. for (i128, i128, i128, i64, i128),
-    // this should be 8 but will end up with 7.
-    const CCInfo &cc_info = cc_assigner->get_ccinfo();
-    auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
-    u32 ngrn = 8 - util::cnt_lz<u16>((arg_regs & 0xff) << 8 | 0x80);
-    u32 nsrn = 8 - util::cnt_lz<u16>(((arg_regs >> 32) & 0xff) << 8 | 0x80);
-    this->scalar_arg_count = ngrn;
-    this->vec_arg_count = nsrn;
+      // TODO: extract ngrn/nsrn from CCAssigner
+      // TODO: this isn't quite accurate, e.g. for (i128, i128, i128, i64, i128),
+      // this should be 8 but will end up with 7.
+      const CCInfo &cc_info = cc_assigner->get_ccinfo();
+      auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
+      u32 ngrn = 8 - util::cnt_lz<u16>((arg_regs & 0xff) << 8 | 0x80);
+      u32 nsrn = 8 - util::cnt_lz<u16>(((arg_regs >> 32) & 0xff) << 8 | 0x80);
+      this->scalar_arg_count = ngrn;
+      this->vec_arg_count = nsrn;
+    }
   }
 }
 
