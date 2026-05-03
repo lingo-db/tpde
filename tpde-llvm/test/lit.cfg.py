@@ -28,5 +28,10 @@ config.available_features.add(f'llvm{config.llvm_version}')
 config.available_features.add(f'os-{config.system_name.lower()}')
 if config.enable_llvm_plugin:
     config.available_features.add("tpde-plugin")
+# Mach-O / Apple Silicon back-end: only present on `__APPLE__` builds
+# of `tpde_llvm_impl`. Tests under `test/macho/` gate on this so they
+# UNSUPPORTED-skip on Linux.
+if config.system_name == 'Darwin':
+    config.available_features.add('tpde-llvm-arm64-darwin')
 
 # TODO(ts): arch config
