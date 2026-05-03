@@ -184,7 +184,14 @@ public:
   // codegen reaches this point.
   static constexpr u32 RELOC_CALL = ARM64_RELOC_BRANCH26;
   static constexpr u32 RELOC_PAGE21 = ARM64_RELOC_PAGE21;
+  // Mach-O's PAGEOFF12 is a single relocation kind regardless of the
+  // patched opcode (linker reads the instruction at r_address and
+  // infers the implicit shift). Both the ADD-immediate and the LDR-Q
+  // (128-bit) flavors map onto it.
+  static constexpr u32 RELOC_PAGEOFF12_ADD = ARM64_RELOC_PAGEOFF12;
   static constexpr u32 RELOC_PAGEOFF12_LDST128 = ARM64_RELOC_PAGEOFF12;
+  static constexpr u32 RELOC_GOT_PAGE21 = ARM64_RELOC_GOT_LOAD_PAGE21;
+  static constexpr u32 RELOC_GOT_PAGEOFF12 = ARM64_RELOC_GOT_LOAD_PAGEOFF12;
   static constexpr u32 RELOC_TLSDESC_PAGE21 = ~u32(0);
   static constexpr u32 RELOC_TLSDESC_LD64_LO12 = ~u32(0);
   static constexpr u32 RELOC_TLSDESC_ADD_LO12 = ~u32(0);

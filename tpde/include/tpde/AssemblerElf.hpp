@@ -187,12 +187,16 @@ class AssemblerElfA64 final : public AssemblerElf {
 
 public:
   // Per-target relocation kinds used by the AArch64 instruction selector
-  // (`CompilerA64.hpp`). Lifted into the assembler concept so the same
-  // codegen template can drive ELF and Mach-O back-ends without baking
-  // either format's reloc enum into the compiler.
+  // (`CompilerA64.hpp`) and tpde-llvm's symbol-loading sequences. Lifted
+  // into the assembler concept so the same codegen template can drive
+  // ELF and Mach-O back-ends without baking either format's reloc enum
+  // into the compiler.
   static constexpr u32 RELOC_CALL = R_AARCH64_CALL26;
   static constexpr u32 RELOC_PAGE21 = R_AARCH64_ADR_PREL_PG_HI21;
+  static constexpr u32 RELOC_PAGEOFF12_ADD = R_AARCH64_ADD_ABS_LO12_NC;
   static constexpr u32 RELOC_PAGEOFF12_LDST128 = R_AARCH64_LDST128_ABS_LO12_NC;
+  static constexpr u32 RELOC_GOT_PAGE21 = R_AARCH64_ADR_GOT_PAGE;
+  static constexpr u32 RELOC_GOT_PAGEOFF12 = R_AARCH64_LD64_GOT_LO12_NC;
   static constexpr u32 RELOC_TLSDESC_PAGE21 = R_AARCH64_TLSDESC_ADR_PAGE21;
   static constexpr u32 RELOC_TLSDESC_LD64_LO12 = R_AARCH64_TLSDESC_LD64_LO12;
   static constexpr u32 RELOC_TLSDESC_ADD_LO12 = R_AARCH64_TLSDESC_ADD_LO12;
