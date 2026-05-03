@@ -23,34 +23,9 @@
 
   #include <disarm64.h>
 
-  #include "tpde/ELF.hpp" // For R_AARCH64_* constants — see translate_reloc_type
-
 namespace tpde::macho {
 
 namespace {
-
-// `CompilerA64.hpp` directly emits ELF AArch64 relocation constants
-// (R_AARCH64_CALL26 etc.) instead of going through an abstract enum on the
-// active assembler. Translate at the boundary so the existing ELF back-end
-// stays untouched. TODO(tpde-macos): move these constants into the assembler
-// concept so CompilerA64 doesn't bake in `elf::` types.
-u32 translate_reloc_type(u32 type) {
-  using namespace tpde::elf;
-  switch (type) {
-  case R_AARCH64_ABS64: return ARM64_RELOC_UNSIGNED;
-  case R_AARCH64_PREL32: return ARM64_RELOC_TPDE_PCREL32;
-  case R_AARCH64_CALL26: return ARM64_RELOC_BRANCH26;
-  case R_AARCH64_ADR_PREL_PG_HI21:
-  case R_AARCH64_ADR_PREL_PG_HI21_NC:
-    return ARM64_RELOC_PAGE21;
-  case R_AARCH64_ADD_ABS_LO12_NC:
-  case R_AARCH64_LDST128_ABS_LO12_NC:
-    return ARM64_RELOC_PAGEOFF12;
-  case R_AARCH64_ADR_GOT_PAGE: return ARM64_RELOC_GOT_LOAD_PAGE21;
-  case R_AARCH64_LD64_GOT_LO12_NC: return ARM64_RELOC_GOT_LOAD_PAGEOFF12;
-  default: return type;
-  }
-}
 
 // Bit blend, identical to the helper in ElfMapper — overwrite the bits in
 // `mask` of the 32-bit instruction at `pc` with the matching bits of `data`.
@@ -307,7 +282,7 @@ bool MachOMapper::map(AssemblerMachO &assembler, SymbolResolver resolver) {
       uintptr_t sym = uintptr_t(sym_p);
       uintptr_t syma = sym + reloc.addend;
 
-      switch (translate_reloc_type(reloc.type)) {
+      switch (reloc.type) {
       case ARM64_RELOC_UNSIGNED: {
         u64 v = syma;
         std::memcpy(reinterpret_cast<void *>(pc), &v, sizeof(u64));

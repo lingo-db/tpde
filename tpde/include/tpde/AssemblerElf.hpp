@@ -186,6 +186,18 @@ class AssemblerElfA64 final : public AssemblerElf {
   static const TargetInfoElf TARGET_INFO;
 
 public:
+  // Per-target relocation kinds used by the AArch64 instruction selector
+  // (`CompilerA64.hpp`). Lifted into the assembler concept so the same
+  // codegen template can drive ELF and Mach-O back-ends without baking
+  // either format's reloc enum into the compiler.
+  static constexpr u32 RELOC_CALL = R_AARCH64_CALL26;
+  static constexpr u32 RELOC_PAGE21 = R_AARCH64_ADR_PREL_PG_HI21;
+  static constexpr u32 RELOC_PAGEOFF12_LDST128 = R_AARCH64_LDST128_ABS_LO12_NC;
+  static constexpr u32 RELOC_TLSDESC_PAGE21 = R_AARCH64_TLSDESC_ADR_PAGE21;
+  static constexpr u32 RELOC_TLSDESC_LD64_LO12 = R_AARCH64_TLSDESC_LD64_LO12;
+  static constexpr u32 RELOC_TLSDESC_ADD_LO12 = R_AARCH64_TLSDESC_ADD_LO12;
+  static constexpr u32 RELOC_TLSDESC_CALL = R_AARCH64_TLSDESC_CALL;
+
   explicit AssemblerElfA64() : AssemblerElf(TARGET_INFO) {}
 };
 

@@ -691,8 +691,9 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::CallBuilder::call_impl(
 
   if (auto *sym = std::get_if<SymRef>(&target)) {
     ASMC(&this->compiler, BL, 0);
-    this->compiler.reloc_text(
-        *sym, elf::R_AARCH64_CALL26, this->compiler.text_writer.offset() - 4);
+    this->compiler.reloc_text(*sym,
+                              Config::Assembler::RELOC_CALL,
+                              this->compiler.text_writer.offset() - 4);
   } else {
     ValuePart &tvp = std::get<ValuePart>(target);
     if (tvp.can_salvage()) {
@@ -922,51 +923,79 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(u32 func_idx) {
     this->text_writer.eh_write_inst(
         dwarf::DW_CFA_offset, dwarf::a64::DW_reg_lr, final_frame_size / 8 - 1);
 
-    AsmReg last_reg = AsmReg::make_invalid();
+    // Save callee-saved registers in **canonical Apple compact-unwind
+    // order**: every saved slot is a 16-byte STP pair, pairs land at
+    // FP+16, FP+32, ..., GP pairs first then FP-bank pairs. If only one
+    // half of a pair is clobbered we save the full pair anyway (writing
+    // the partner's then-current value, which is also the caller's value
+    // since we haven't touched it). This wastes at most 8 bytes per
+    // partial pair but keeps the saved-pair layout describable by both
+    // DWARF FDE and Mach-O compact unwind without divergence.
+    //
+    // Was: a BitSetIterator-driven pairing that emitted 8-byte STR
+    // singletons whenever a bank boundary or odd-count tail appeared.
+    // That layout cannot be encoded by the compact-unwind frame-mode
+    // bitmap (which assumes contiguous 16-byte pair slots), so even
+    // before M4 lands it's worth fixing here unconditionally — the new
+    // layout is also a valid AAPCS layout, so the ELF/Linux back-end is
+    // unaffected.
+    struct CalleeSavePair {
+      u8 first;  // AsmReg id of first register in pair
+      u8 second; // AsmReg id of second register
+      bool is_fp_bank;
+    };
+    static constexpr CalleeSavePair kCanonicalPairs[] = {
+        {AsmReg::R19, AsmReg::R20, false},
+        {AsmReg::R21, AsmReg::R22, false},
+        {AsmReg::R23, AsmReg::R24, false},
+        {AsmReg::R25, AsmReg::R26, false},
+        {AsmReg::R27, AsmReg::R28, false},
+        {AsmReg::V8, AsmReg::V9, true},
+        {AsmReg::V10, AsmReg::V11, true},
+        {AsmReg::V12, AsmReg::V13, true},
+        {AsmReg::V14, AsmReg::V15, true},
+    };
+
     u32 frame_off = 16;
-    for (auto reg : util::BitSetIterator{saved_regs}) {
-      u8 dwarf_base = reg < 32 ? dwarf::a64::DW_reg_x0 : dwarf::a64::DW_reg_v0;
-      u8 dwarf_reg = dwarf_base + reg % 32;
-      u32 cfa_off = (final_frame_size - frame_off) / 8 - last_reg.valid();
-      if ((dwarf_reg & dwarf::DWARF_CFI_PRIMARY_OPCODE_MASK) == 0) {
-        this->text_writer.eh_write_inst(
-            dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
-      } else {
-        this->text_writer.eh_write_inst(
-            dwarf::DW_CFA_offset_extended, dwarf_reg, cfa_off);
+    for (const auto &p : kCanonicalPairs) {
+      const u64 mask = (u64{1} << p.first) | (u64{1} << p.second);
+      if (!(saved_regs & mask)) {
+        continue;
       }
 
-      if (last_reg.valid()) {
-        const auto reg_bank = this->register_file.reg_bank(AsmReg{reg});
-        const auto last_bank = this->register_file.reg_bank(last_reg);
-        if (reg_bank == last_bank) {
-          if (reg_bank == Config::GP_BANK) {
-            prologue.push_back(
-                de64_STPx(last_reg, AsmReg{reg}, stack_reg, frame_off));
-          } else {
-            prologue.push_back(
-                de64_STPd(last_reg, AsmReg{reg}, stack_reg, frame_off));
-          }
-          frame_off += 16;
-          last_reg = AsmReg::make_invalid();
-        } else {
-          assert(last_bank == Config::GP_BANK && reg_bank == Config::FP_BANK);
-          prologue.push_back(de64_STRxu(last_reg, stack_reg, frame_off));
-          frame_off += 8;
-          last_reg = AsmReg{reg};
+      // Emit the STP at the canonical pair offset.
+      AsmReg ra{u64{p.first}};
+      AsmReg rb{u64{p.second}};
+      if (!p.is_fp_bank) {
+        prologue.push_back(de64_STPx(ra, rb, stack_reg, frame_off));
+      } else {
+        prologue.push_back(de64_STPd(ra, rb, stack_reg, frame_off));
+      }
+
+      // CFI: emit DW_CFA_offset only for registers actually clobbered.
+      // The unclobbered partner doesn't need an unwind rule (its caller
+      // value is already in the live register), even though we wrote it
+      // to the stack for layout reasons.
+      for (int i = 0; i < 2; ++i) {
+        u8 reg_id = i == 0 ? p.first : p.second;
+        if (!(saved_regs & (u64{1} << reg_id))) {
+          continue;
         }
-      } else {
-        last_reg = AsmReg{reg};
+        u32 reg_off = frame_off + u32(i) * 8;
+        u8 dwarf_base = reg_id < 32 ? dwarf::a64::DW_reg_x0
+                                    : dwarf::a64::DW_reg_v0;
+        u8 dwarf_reg = dwarf_base + reg_id % 32;
+        u32 cfa_off = (final_frame_size - reg_off) / 8;
+        if ((dwarf_reg & dwarf::DWARF_CFI_PRIMARY_OPCODE_MASK) == 0) {
+          this->text_writer.eh_write_inst(
+              dwarf::DW_CFA_offset, dwarf_reg, cfa_off);
+        } else {
+          this->text_writer.eh_write_inst(
+              dwarf::DW_CFA_offset_extended, dwarf_reg, cfa_off);
+        }
       }
-    }
 
-    if (last_reg.valid()) {
-      if (this->register_file.reg_bank(last_reg) == Config::GP_BANK) {
-        prologue.push_back(de64_STRxu(last_reg, stack_reg, frame_off));
-      } else {
-        assert(this->register_file.reg_bank(last_reg) == Config::FP_BANK);
-        prologue.push_back(de64_STRdu(last_reg, stack_reg, frame_off));
-      }
+      frame_off += 16;
     }
 
     assert(prologue.size() * sizeof(u32) <= func_prologue_alloc);
@@ -1010,38 +1039,41 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::finish_func(u32 func_idx) {
       ASMNC(MOV_SPx, DA_SP, DA_GP(29));
     }
 
-    AsmReg last_reg = AsmReg::make_invalid();
+    // Mirror of the prologue's canonical pair iteration. See the matching
+    // comment block in `finish_func`'s prologue construction above for
+    // why we always emit pair LDPs at canonical offsets even when only
+    // one half of a pair was clobbered.
+    struct CalleeSavePair {
+      u8 first;
+      u8 second;
+      bool is_fp_bank;
+    };
+    static constexpr CalleeSavePair kCanonicalPairs[] = {
+        {AsmReg::R19, AsmReg::R20, false},
+        {AsmReg::R21, AsmReg::R22, false},
+        {AsmReg::R23, AsmReg::R24, false},
+        {AsmReg::R25, AsmReg::R26, false},
+        {AsmReg::R27, AsmReg::R28, false},
+        {AsmReg::V8, AsmReg::V9, true},
+        {AsmReg::V10, AsmReg::V11, true},
+        {AsmReg::V12, AsmReg::V13, true},
+        {AsmReg::V14, AsmReg::V15, true},
+    };
+
     u32 frame_off = 16;
-    for (auto reg : util::BitSetIterator{saved_regs}) {
-      if (last_reg.valid()) {
-        const auto reg_bank = this->register_file.reg_bank(AsmReg{reg});
-        const auto last_bank = this->register_file.reg_bank(last_reg);
-        if (reg_bank == last_bank) {
-          if (reg_bank == Config::GP_BANK) {
-            ASMNC(LDPx, last_reg, AsmReg{reg}, stack_reg, frame_off);
-          } else {
-            ASMNC(LDPd, last_reg, AsmReg{reg}, stack_reg, frame_off);
-          }
-          frame_off += 16;
-          last_reg = AsmReg::make_invalid();
-        } else {
-          assert(last_bank == Config::GP_BANK && reg_bank == Config::FP_BANK);
-          ASMNC(LDRxu, last_reg, stack_reg, frame_off);
-          frame_off += 8;
-          last_reg = AsmReg{reg};
-        }
+    for (const auto &p : kCanonicalPairs) {
+      const u64 mask = (u64{1} << p.first) | (u64{1} << p.second);
+      if (!(saved_regs & mask)) {
         continue;
       }
-
-      last_reg = AsmReg{reg};
-    }
-
-    if (last_reg.valid()) {
-      if (this->register_file.reg_bank(last_reg) == Config::GP_BANK) {
-        ASMNC(LDRxu, last_reg, stack_reg, frame_off);
+      AsmReg ra{u64{p.first}};
+      AsmReg rb{u64{p.second}};
+      if (!p.is_fp_bank) {
+        ASMNC(LDPx, ra, rb, stack_reg, frame_off);
       } else {
-        ASMNC(LDRdu, last_reg, stack_reg, frame_off);
+        ASMNC(LDPd, ra, rb, stack_reg, frame_off);
       }
+      frame_off += 16;
     }
     if (needs_stack_frame) {
       u32 body_start = func_start_off + func_prologue_alloc;
@@ -1460,10 +1492,12 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::materialize_constant(
         rodata, "", raw_data, 16, Assembler::SymBinding::LOCAL);
     this->text_writer.ensure_space(8); // ensure contiguous instructions
     this->reloc_text(
-        sym, elf::R_AARCH64_ADR_PREL_PG_HI21, this->text_writer.offset(), 0);
+        sym, Config::Assembler::RELOC_PAGE21, this->text_writer.offset(), 0);
     ASMNC(ADRP, permanent_scratch_reg, 0, 0);
-    this->reloc_text(
-        sym, elf::R_AARCH64_LDST128_ABS_LO12_NC, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_PAGEOFF12_LDST128,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(LDRqu, dst, permanent_scratch_reg, 0);
     return;
   }
@@ -2018,17 +2052,25 @@ CompilerA64<Adaptor, Derived, BaseTy, Config>::ScratchReg
     }
 
     this->text_writer.ensure_space(0x18);
-    this->reloc_text(
-        sym, elf::R_AARCH64_TLSDESC_ADR_PAGE21, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_TLSDESC_PAGE21,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(ADRP, r0, 0, 0);
-    this->reloc_text(
-        sym, elf::R_AARCH64_TLSDESC_LD64_LO12, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_TLSDESC_LD64_LO12,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(LDRxu, r1, r0, 0);
-    this->reloc_text(
-        sym, elf::R_AARCH64_TLSDESC_ADD_LO12, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_TLSDESC_ADD_LO12,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(ADDxi, r0, r0, 0);
-    this->reloc_text(
-        sym, elf::R_AARCH64_TLSDESC_CALL, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_TLSDESC_CALL,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(BLR, r1);
     ASMNC(MRS, r1, 0xde82); // TPIDR_EL0
     // TODO: maybe return expr x0+x1.

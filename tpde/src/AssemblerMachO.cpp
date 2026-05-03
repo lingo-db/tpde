@@ -3,7 +3,6 @@
 
 #include "tpde/AssemblerMachO.hpp"
 #include "tpde/Assembler.hpp"
-#include "tpde/ELF.hpp" // ELF reloc constants — see translate_reloc_type
 #include "tpde/MachO.hpp"
 #include "tpde/util/misc.hpp"
 
@@ -12,28 +11,6 @@
 namespace tpde::macho {
 
 namespace {
-
-// Same purpose as MachOMapper's translate_reloc_type: CompilerA64.hpp emits
-// ELF AArch64 relocation constants directly, so the Mach-O object writer
-// must accept those forms too. TODO(tpde-macos): once the assembler concept
-// owns the per-target reloc constants, this translation goes away.
-u32 translate_reloc_type(u32 type) {
-  using namespace tpde::elf;
-  switch (type) {
-  case R_AARCH64_ABS64: return ARM64_RELOC_UNSIGNED;
-  case R_AARCH64_PREL32: return ARM64_RELOC_TPDE_PCREL32;
-  case R_AARCH64_CALL26: return ARM64_RELOC_BRANCH26;
-  case R_AARCH64_ADR_PREL_PG_HI21:
-  case R_AARCH64_ADR_PREL_PG_HI21_NC:
-    return ARM64_RELOC_PAGE21;
-  case R_AARCH64_ADD_ABS_LO12_NC:
-  case R_AARCH64_LDST128_ABS_LO12_NC:
-    return ARM64_RELOC_PAGEOFF12;
-  case R_AARCH64_ADR_GOT_PAGE: return ARM64_RELOC_GOT_LOAD_PAGE21;
-  case R_AARCH64_LD64_GOT_LO12_NC: return ARM64_RELOC_GOT_LOAD_PAGEOFF12;
-  default: return type;
-  }
-}
 
 // Helper: copy a Mach-O segname/sectname (16 bytes, NUL-padded, *not* required
 // to be NUL-terminated when full).
@@ -365,7 +342,7 @@ std::vector<u8> AssemblerMachO::build_object_file() {
       // Translate to `(type, length, pcrel)` per the Mach-O ARM64 ABI.
       u32 type, length, pcrel;
       bool needs_addend_record = false;
-      u32 reloc_kind = translate_reloc_type(reloc.type);
+      u32 reloc_kind = reloc.type;
       switch (reloc_kind) {
       case ARM64_RELOC_UNSIGNED:
         type = ARM64_RELOC_UNSIGNED;

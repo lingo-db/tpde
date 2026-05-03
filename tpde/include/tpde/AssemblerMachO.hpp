@@ -175,6 +175,21 @@ class AssemblerMachOA64 final : public AssemblerMachO {
   static const TargetInfoMachO TARGET_INFO;
 
 public:
+  // Mirror of `AssemblerElfA64`'s per-target reloc kinds. The compiler
+  // selects between them through `Config::Assembler::RELOC_*` so the same
+  // codegen template is back-end agnostic.
+  // TLS isn't supported on Mach-O yet (see rough plan §7); the TLS-related
+  // entries are sentinels — the Mach-O writer asserts if it encounters
+  // them, and `tpde-llvm` should reject `thread_local` globals before
+  // codegen reaches this point.
+  static constexpr u32 RELOC_CALL = ARM64_RELOC_BRANCH26;
+  static constexpr u32 RELOC_PAGE21 = ARM64_RELOC_PAGE21;
+  static constexpr u32 RELOC_PAGEOFF12_LDST128 = ARM64_RELOC_PAGEOFF12;
+  static constexpr u32 RELOC_TLSDESC_PAGE21 = ~u32(0);
+  static constexpr u32 RELOC_TLSDESC_LD64_LO12 = ~u32(0);
+  static constexpr u32 RELOC_TLSDESC_ADD_LO12 = ~u32(0);
+  static constexpr u32 RELOC_TLSDESC_CALL = ~u32(0);
+
   AssemblerMachOA64() : AssemblerMachO(TARGET_INFO) {}
 };
 
