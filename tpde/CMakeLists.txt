@@ -32,9 +32,11 @@ endif ()
 target_sources(tpde PRIVATE
     src/Assembler.cpp
     src/AssemblerElf.cpp
+    src/AssemblerMachO.cpp
     src/base.cpp
     src/ElfMapper.cpp
     src/FunctionWriter.cpp
+    src/MachOMapper.cpp
     src/StringTable.cpp
     src/ValueAssignment.cpp
     src/util/SmallVector.cpp
@@ -46,6 +48,7 @@ target_sources(tpde PRIVATE
         include/tpde/Analyzer.hpp
         include/tpde/Assembler.hpp
         include/tpde/AssemblerElf.hpp
+        include/tpde/AssemblerMachO.hpp
         include/tpde/AssignmentPartRef.hpp
         include/tpde/base.hpp
         include/tpde/Compiler.hpp
@@ -57,6 +60,8 @@ target_sources(tpde PRIVATE
         include/tpde/FunctionWriter.hpp
         include/tpde/GenericValuePart.hpp
         include/tpde/IRAdaptor.hpp
+        include/tpde/MachO.hpp
+        include/tpde/MachOMapper.hpp
         include/tpde/RegisterFile.hpp
         include/tpde/ScratchReg.hpp
         include/tpde/StringTable.hpp
@@ -131,6 +136,19 @@ target_sources(tpde_test PRIVATE
         src/test/TestIRCompilerA64.hpp
         src/test/TestIRCompilerX64.hpp
 )
+
+
+# macOS / arm64 JIT smoke test (separate exe so it runs even when LIT is off).
+if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    add_executable(tpde_macho_jit_test src/test/test_macho_jit.cpp
+                                        src/test/TestIR.cpp)
+    target_link_libraries(tpde_macho_jit_test PRIVATE tpde)
+    target_include_directories(tpde_macho_jit_test PRIVATE src/test)
+    # Ad-hoc sign so MAP_JIT works on Apple Silicon without an entitlement.
+    add_custom_command(TARGET tpde_macho_jit_test POST_BUILD
+        COMMAND codesign --sign - --force $<TARGET_FILE:tpde_macho_jit_test>
+        VERBATIM)
+endif ()
 
 
 # Tests
