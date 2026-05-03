@@ -20,6 +20,10 @@ struct CompilerConfig : tpde::a64::PlatformConfig {
   static constexpr bool DEFAULT_VAR_REF_HANDLING = false;
 };
 
+struct CompilerConfigDarwin : tpde::a64::PlatformConfigDarwin {
+  static constexpr bool DEFAULT_VAR_REF_HANDLING = false;
+};
+
 struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                                                   LLVMCompilerArm64,
                                                   LLVMCompilerBase,

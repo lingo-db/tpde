@@ -321,15 +321,15 @@ private:
     return tpde::Assembler::SymBinding::GLOBAL;
   }
 
-  static tpde::elf::AssemblerElf::SymVisibility
+  static tpde::Assembler::SymVisibility
       convert_visibility(const llvm::GlobalValue *gv) {
     switch (gv->getVisibility()) {
     case llvm::GlobalValue::DefaultVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::DEFAULT;
+      return tpde::Assembler::SymVisibility::DEFAULT;
     case llvm::GlobalValue::HiddenVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::HIDDEN;
+      return tpde::Assembler::SymVisibility::HIDDEN;
     case llvm::GlobalValue::ProtectedVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::PROTECTED;
+      return tpde::Assembler::SymVisibility::PROTECTED;
     default: TPDE_UNREACHABLE("invalid global visibility");
     }
   }
@@ -788,8 +788,9 @@ LLVMCompilerBase<Adaptor, Derived, Config>::SecRef
   }
 
   if (retain) {
-    // TODO: ELF only
-    this->assembler.get_section(sec).flags |= tpde::elf::SHF_GNU_RETAIN;
+    // Format-neutral "do not dead-strip" hook: ELF flips
+    // SHF_GNU_RETAIN, Mach-O flips S_ATTR_NO_DEAD_STRIP.
+    this->assembler.set_section_retain(sec);
   }
 
   return sec;

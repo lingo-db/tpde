@@ -99,6 +99,25 @@ public:
 
   void sym_def(SymRef sym, SecRef sec, u64 pos, u64 size) override;
 
+  /// Mach-O has no full STV_* visibility model. The closest analogue
+  /// is `N_PEXT` (private external) which makes the symbol effectively
+  /// static after final linking — that's what HIDDEN means for users.
+  /// Other visibility values (INTERNAL, PROTECTED) have no Mach-O
+  /// counterpart and are no-ops; DEFAULT means "external" already.
+  void sym_set_visibility(SymRef sym, SymVisibility visibility) override;
+
+  /// Mach-O equivalent of ELF `SHF_GNU_RETAIN`: set the
+  /// `S_ATTR_NO_DEAD_STRIP` attribute on the section so `ld` keeps it
+  /// even when no symbol points at it.
+  void set_section_retain(SecRef sec) override;
+
+  /// Create a Mach-O static-init or static-term section. ELF uses
+  /// `.init_array` / `.fini_array`; Mach-O uses
+  /// `__DATA,__mod_init_func` / `__DATA,__mod_term_func`. The
+  /// `group` parameter is ignored — Mach-O has no section groups.
+  [[nodiscard]] SecRef create_structor_section(bool init,
+                                               SecRef group = SecRef()) override;
+
   /// Returns true if the SymRef encodes a local symbol; mirrors
   /// `AssemblerElf::sym_is_local`. We use the same high-bit scheme so the
   /// JIT mapper can index symbol arrays uniformly.

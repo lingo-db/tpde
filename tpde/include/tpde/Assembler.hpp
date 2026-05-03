@@ -170,6 +170,20 @@ public:
     GLOBAL,
   };
 
+  /// Symbol visibility, format-neutral. Each concrete assembler maps
+  /// these onto its native representation:
+  ///   - ELF: directly to STV_DEFAULT/INTERNAL/HIDDEN/PROTECTED.
+  ///   - Mach-O: HIDDEN -> set N_PEXT in n_type (becomes a "private
+  ///     external" — i.e. effectively static at final-link time).
+  ///     Other values are no-ops; Mach-O has no INTERNAL/PROTECTED
+  ///     analogues, and Apple `ld` expects DEFAULT to mean "extern".
+  enum class SymVisibility : u8 {
+    DEFAULT,
+    INTERNAL,
+    HIDDEN,
+    PROTECTED,
+  };
+
   struct TargetInfo {
     struct SectionFlags {
       u32 type;
@@ -242,6 +256,37 @@ public:
   virtual SymRef sym_predef_tls(std::string_view, SymBinding) = 0;
   /// Define a symbol at the specified location.
   virtual void sym_def(SymRef, SecRef, u64 pos, u64 size) = 0;
+
+  /// Set a symbol's visibility. Default no-op so backends that don't
+  /// distinguish (or only support a subset, like Mach-O) can opt out.
+  virtual void sym_set_visibility(SymRef, SymVisibility) {}
+
+  /// Section-level "do not dead-strip" hint. ELF maps to `SHF_GNU_RETAIN`,
+  /// Mach-O maps to `S_ATTR_NO_DEAD_STRIP`. Default no-op.
+  virtual void set_section_retain(SecRef) {}
+
+  /// Create a section-group container. Comdat-style coalescing on ELF
+  /// (a `SHT_GROUP` section listing the member sections + a signature
+  /// symbol). Mach-O has no analogue (comdat is expressed via
+  /// `S_COALESCED` weak-defs), so the default returns an invalid
+  /// SecRef; LLVM-frontend code should treat that as "no group" and
+  /// skip the group-related ops below.
+  [[nodiscard]] virtual SecRef create_group_section(SymRef /*sig*/,
+                                                    bool /*is_comdat*/) {
+    return SecRef();
+  }
+
+  /// Add `member` to the section group `group`. No-op when groups are
+  /// unsupported (Mach-O).
+  virtual void add_to_group(SecRef /*group*/, SecRef /*member*/) {}
+
+  /// Create a static-init / static-fini section (.init_array / .fini_array
+  /// on ELF; `__DATA,__mod_init_func` / `__mod_term_func` on Mach-O).
+  /// Default returns invalid SecRef; subclasses override.
+  [[nodiscard]] virtual SecRef
+      create_structor_section(bool /*init*/, SecRef /*group*/ = SecRef()) {
+    return SecRef();
+  }
 
   /// Define symbol and allocate space for data; returns offset into section.
   u32 sym_def_predef_data(SecRef sec, SymRef sym, u64 size, u32 align);

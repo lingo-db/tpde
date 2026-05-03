@@ -27,14 +27,6 @@ protected:
     u16 elf_machine;
   };
 
-public:
-  enum class SymVisibility : u8 {
-    DEFAULT = STV_DEFAULT,
-    INTERNAL = STV_INTERNAL,
-    HIDDEN = STV_HIDDEN,
-    PROTECTED = STV_PROTECTED,
-  };
-
 private:
   std::vector<Elf64_Sym> global_symbols, local_symbols;
   /// Section indices for large section numbers
@@ -63,7 +55,8 @@ private:
   [[nodiscard]] SymRef create_section_symbol(SecRef ref, std::string_view name);
 
 public:
-  SecRef create_structor_section(bool init, SecRef group = SecRef());
+  SecRef create_structor_section(bool init,
+                                 SecRef group = SecRef()) override;
 
   void rename_section(SecRef, std::string_view) override;
 
@@ -71,10 +64,10 @@ public:
 
   /// Create a new group section.
   [[nodiscard]] SecRef create_group_section(SymRef signature_sym,
-                                            bool is_comdat);
+                                            bool is_comdat) override;
 
   /// Add a section to a section group.
-  void add_to_group(SecRef group_ref, SecRef sec_ref);
+  void add_to_group(SecRef group_ref, SecRef sec_ref) override;
 
   const char *sec_name(SecRef ref) const;
 
@@ -130,8 +123,21 @@ public:
     // TODO: handle fixups?
   }
 
-  void sym_set_visibility(SymRef sym, SymVisibility visibility) {
-    sym_ptr(sym)->st_other = static_cast<u8>(visibility);
+  void set_section_retain(SecRef sec) override {
+    get_section(sec).flags |= SHF_GNU_RETAIN;
+  }
+
+  void sym_set_visibility(SymRef sym, SymVisibility visibility) override {
+    u8 stv;
+    switch (visibility) {
+      using enum SymVisibility;
+    case DEFAULT: stv = STV_DEFAULT; break;
+    case INTERNAL: stv = STV_INTERNAL; break;
+    case HIDDEN: stv = STV_HIDDEN; break;
+    case PROTECTED: stv = STV_PROTECTED; break;
+    default: stv = STV_DEFAULT; break;
+    }
+    sym_ptr(sym)->st_other = stv;
   }
 
   const char *sym_name(SymRef sym) const {
