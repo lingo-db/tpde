@@ -174,6 +174,30 @@ SymRef AssemblerMachO::sym_predef_data(std::string_view name,
   return sym_add(name, binding);
 }
 
+void AssemblerMachO::sym_copy(SymRef dst, SymRef src) {
+  // Aliases: dst points at the same place as src. Mirrors
+  // AssemblerElf::sym_copy — copy section + value, leave the symbol
+  // type/binding fields alone.
+  assert(!is_section_sym(dst) && !is_section_sym(src) &&
+         "section-symbol SymRefs aren't real nlist entries");
+  const nlist_64 *src_ptr = sym_ptr(src);
+  nlist_64 *dst_ptr = sym_ptr(dst);
+  // n_type's TYPE bits (UNDF/ABS/SECT) describe what kind of symbol
+  // this is — copy from src so the alias becomes "defined" the same
+  // way. EXT/PEXT bits stay on dst (preserves binding/visibility).
+  dst_ptr->n_type = (dst_ptr->n_type & ~N_TYPE) | (src_ptr->n_type & N_TYPE);
+  dst_ptr->n_sect = src_ptr->n_sect;
+  dst_ptr->n_value = src_ptr->n_value;
+  // Mirror the parallel section table too so build_object_file's
+  // ordinal fix-up sees a consistent state.
+  SecRef src_sec = sym_section(src);
+  if (sym_is_local(dst)) {
+    local_sym_secs[sym_idx(dst)] = src_sec;
+  } else {
+    global_sym_secs[sym_idx(dst)] = src_sec;
+  }
+}
+
 void AssemblerMachO::set_section_retain(SecRef sec) {
   // Mach-O encodes "do not dead-strip" as `S_ATTR_NO_DEAD_STRIP` in the
   // high 24 bits of `section.flags` (alongside the section type in the

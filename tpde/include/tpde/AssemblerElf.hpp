@@ -77,7 +77,7 @@ private:
 public:
   // Symbols
 
-  void sym_copy(SymRef dst, SymRef src);
+  void sym_copy(SymRef dst, SymRef src) override;
 
 private:
   [[nodiscard]] SymRef

@@ -6,8 +6,15 @@
 #include <llvm/TargetParser/Triple.h>
 #include <memory>
 
-#include "arm64/LLVMCompilerArm64.hpp"
-#include "x64/LLVMCompilerX64.hpp"
+#ifdef TPDE_ARCH_AARCH64
+  #include "arm64/LLVMCompilerArm64.hpp"
+  #ifdef TPDE_LLVM_ARM64_DARWIN
+    #include "arm64/LLVMCompilerArm64Darwin.hpp"
+  #endif
+#endif
+#ifdef TPDE_ARCH_X86_64
+  #include "x64/LLVMCompilerX64.hpp"
+#endif
 
 namespace tpde_llvm {
 
@@ -19,7 +26,13 @@ std::unique_ptr<LLVMCompiler> LLVMCompiler::create(const llvm::Triple &triple) {
   case llvm::Triple::x86_64: return x64::create_compiler(triple);
 #endif
 #ifdef TPDE_ARCH_AARCH64
-  case llvm::Triple::aarch64: return arm64::create_compiler(triple);
+  case llvm::Triple::aarch64:
+  #ifdef TPDE_LLVM_ARM64_DARWIN
+    if (triple.isOSDarwin()) {
+      return arm64::create_compiler_darwin(triple);
+    }
+  #endif
+    return arm64::create_compiler(triple);
 #endif
   default: return nullptr;
   }

@@ -16,20 +16,24 @@
 
 namespace tpde_llvm::arm64 {
 
-struct CompilerConfig : tpde::a64::PlatformConfig {
+// Darwin variant — `PlatformConfigDarwin` selects AssemblerMachOA64 +
+// CCAssignerDarwinAArch64. The struct is still named `CompilerConfig`
+// (rather than `CompilerConfigDarwin`) so the rest of this duplicated
+// file matches the ELF source verbatim, keeping the diff narrow.
+struct CompilerConfig : tpde::a64::PlatformConfigDarwin {
   static constexpr bool DEFAULT_VAR_REF_HANDLING = false;
 };
 
-struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
-                                                  LLVMCompilerArm64,
+struct LLVMCompilerArm64Darwin : tpde::a64::CompilerA64<LLVMAdaptor,
+                                                  LLVMCompilerArm64Darwin,
                                                   LLVMCompilerBase,
                                                   CompilerConfig>,
                            tpde_encodegen::EncodeCompiler<LLVMAdaptor,
-                                                          LLVMCompilerArm64,
+                                                          LLVMCompilerArm64Darwin,
                                                           LLVMCompilerBase,
                                                           CompilerConfig> {
   using Base = tpde::a64::CompilerA64<LLVMAdaptor,
-                                      LLVMCompilerArm64,
+                                      LLVMCompilerArm64Darwin,
                                       LLVMCompilerBase,
                                       CompilerConfig>;
 
@@ -43,14 +47,15 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
 
   std::unique_ptr<LLVMAdaptor> adaptor;
 
-  std::variant<std::monostate, tpde::a64::CCAssignerAAPCS> cc_assigners;
+  std::variant<std::monostate, tpde::a64::CCAssignerDarwinAArch64> cc_assigners;
 
   static constexpr std::array<AsmReg, 2> LANDING_PAD_RES_REGS = {AsmReg::R0,
                                                                  AsmReg::R1};
 
-  explicit LLVMCompilerArm64(std::unique_ptr<LLVMAdaptor> &&adaptor)
+  explicit LLVMCompilerArm64Darwin(std::unique_ptr<LLVMAdaptor> &&adaptor)
       : Base{adaptor.get()}, adaptor(std::move(adaptor)) {
-    static_assert(tpde::Compiler<LLVMCompilerArm64, tpde::a64::PlatformConfig>);
+    static_assert(
+        tpde::Compiler<LLVMCompilerArm64Darwin, tpde::a64::PlatformConfigDarwin>);
   }
 
   void reset() {
@@ -102,7 +107,7 @@ struct LLVMCompilerArm64 : tpde::a64::CompilerA64<LLVMAdaptor,
                                   ValuePart &&res_of);
 };
 
-void LLVMCompilerArm64::load_address_of_var_reference(
+void LLVMCompilerArm64Darwin::load_address_of_var_reference(
     AsmReg dst, tpde::AssignmentPartRef ap) {
   auto *global = this->adaptor->global_list[ap.variable_ref_data()];
   const auto sym = global_sym(global);
@@ -129,8 +134,8 @@ void LLVMCompilerArm64::load_address_of_var_reference(
   }
 }
 
-std::optional<LLVMCompilerArm64::CallBuilder>
-    LLVMCompilerArm64::create_call_builder(const llvm::CallBase *cb) {
+std::optional<LLVMCompilerArm64Darwin::CallBuilder>
+    LLVMCompilerArm64Darwin::create_call_builder(const llvm::CallBase *cb) {
   llvm::CallingConv::ID cc = llvm::CallingConv::C;
   if (cb) {
     cc = cb->getCallingConv();
@@ -139,14 +144,14 @@ std::optional<LLVMCompilerArm64::CallBuilder>
   case llvm::CallingConv::C:
   case llvm::CallingConv::Fast:
     // On AArch6464, fastcc behaves like the C calling convention.
-    cc_assigners = tpde::a64::CCAssignerAAPCS();
+    cc_assigners = tpde::a64::CCAssignerDarwinAArch64();
     return CallBuilder{*this,
-                       std::get<tpde::a64::CCAssignerAAPCS>(cc_assigners)};
+                       std::get<tpde::a64::CCAssignerDarwinAArch64>(cc_assigners)};
   default: return std::nullopt;
   }
 }
 
-void LLVMCompilerArm64::extract_element(ValueRef &vec_vr,
+void LLVMCompilerArm64Darwin::extract_element(ValueRef &vec_vr,
                                         unsigned idx,
                                         LLVMBasicValType ty,
                                         ValuePart &out) {
@@ -187,7 +192,7 @@ void LLVMCompilerArm64::extract_element(ValueRef &vec_vr,
   }
 }
 
-void LLVMCompilerArm64::insert_element(ValueRef &vec_vr,
+void LLVMCompilerArm64Darwin::insert_element(ValueRef &vec_vr,
                                        unsigned idx,
                                        LLVMBasicValType ty,
                                        GenericValuePart el) {
@@ -230,7 +235,7 @@ void LLVMCompilerArm64::insert_element(ValueRef &vec_vr,
   vec_ref.set_modified();
 }
 
-bool LLVMCompilerArm64::compile_cond_br(const llvm::Instruction *inst,
+bool LLVMCompilerArm64Darwin::compile_cond_br(const llvm::Instruction *inst,
                                         const ValInfo &,
                                         u64) {
 #if LLVM_VERSION_MAJOR >= 23
@@ -253,7 +258,7 @@ bool LLVMCompilerArm64::compile_cond_br(const llvm::Instruction *inst,
   return true;
 }
 
-bool LLVMCompilerArm64::compile_inline_asm(const llvm::CallBase *call) {
+bool LLVMCompilerArm64Darwin::compile_inline_asm(const llvm::CallBase *call) {
   auto inline_asm = llvm::cast<llvm::InlineAsm>(call->getCalledOperand());
   // TODO: handle inline assembly that actually does something
   if (!inline_asm->getAsmString().empty() || inline_asm->isAlignStack() ||
@@ -276,7 +281,7 @@ bool LLVMCompilerArm64::compile_inline_asm(const llvm::CallBase *call) {
   return true;
 }
 
-bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
+bool LLVMCompilerArm64Darwin::compile_icmp(const llvm::Instruction *inst,
                                      const ValInfo &val_info,
                                      u64) {
   const auto *cmp = llvm::cast<llvm::ICmpInst>(inst);
@@ -472,7 +477,7 @@ bool LLVMCompilerArm64::compile_icmp(const llvm::Instruction *inst,
   return true;
 }
 
-void LLVMCompilerArm64::compile_i32_cmp_zero(AsmReg reg,
+void LLVMCompilerArm64Darwin::compile_i32_cmp_zero(AsmReg reg,
                                              llvm::CmpInst::Predicate pred) {
   Da64Cond cond = DA_AL;
   switch (pred) {
@@ -492,12 +497,12 @@ void LLVMCompilerArm64::compile_i32_cmp_zero(AsmReg reg,
   ASM(CSETw, reg, cond);
 }
 
-LLVMCompilerArm64::GenericValuePart
-    LLVMCompilerArm64::create_addr_for_alloca(tpde::AssignmentPartRef ap) {
+LLVMCompilerArm64Darwin::GenericValuePart
+    LLVMCompilerArm64Darwin::create_addr_for_alloca(tpde::AssignmentPartRef ap) {
   return GenericValuePart::Expr{AsmReg::R29, ap.variable_stack_off()};
 }
 
-void LLVMCompilerArm64::create_helper_call(std::span<IRValueRef> args,
+void LLVMCompilerArm64Darwin::create_helper_call(std::span<IRValueRef> args,
                                            ValueRef *result,
                                            SymRef sym) {
   tpde::util::SmallVector<CallArg, 8> arg_vec{};
@@ -508,7 +513,7 @@ void LLVMCompilerArm64::create_helper_call(std::span<IRValueRef> args,
   generate_call(sym, arg_vec, result);
 }
 
-bool LLVMCompilerArm64::handle_intrin(const llvm::IntrinsicInst *inst) {
+bool LLVMCompilerArm64Darwin::handle_intrin(const llvm::IntrinsicInst *inst) {
   const auto intrin_id = inst->getIntrinsicID();
   switch (intrin_id) {
   case llvm::Intrinsic::vastart: {
@@ -614,7 +619,7 @@ bool LLVMCompilerArm64::handle_intrin(const llvm::IntrinsicInst *inst) {
   }
 }
 
-bool LLVMCompilerArm64::handle_overflow_intrin_128(OverflowOp op,
+bool LLVMCompilerArm64Darwin::handle_overflow_intrin_128(OverflowOp op,
                                                    GenericValuePart &&lhs_lo,
                                                    GenericValuePart &&lhs_hi,
                                                    GenericValuePart &&rhs_lo,
@@ -697,15 +702,22 @@ bool LLVMCompilerArm64::handle_overflow_intrin_128(OverflowOp op,
   }
 }
 
-std::unique_ptr<LLVMCompiler> create_compiler(const llvm::Triple &triple) {
-  if (!triple.isOSBinFormatELF()) {
+std::unique_ptr<LLVMCompiler> create_compiler_darwin(
+    const llvm::Triple &triple) {
+  if (!triple.isOSDarwin()) {
     return nullptr;
   }
 
+  // Same data-layout string as the ELF Linux/AArch64 build. The
+  // Darwin variant *would* canonically use `m:o` to make LLVM's
+  // Mangler add the leading `_` itself, but `AssemblerMachO`
+  // already injects the underscore at object-file write time
+  // (`build_object_file` `n_strx` step). Switching to `m:o` here
+  // would double-prefix every symbol — `__foo` instead of `_foo`.
   llvm::StringRef dl_str = "e-m:e-p270:32:32-p271:32:32-p272:64:64-"
                            "i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32";
   auto adaptor = std::make_unique<LLVMAdaptor>(llvm::DataLayout(dl_str));
-  return std::make_unique<LLVMCompilerArm64>(std::move(adaptor));
+  return std::make_unique<LLVMCompilerArm64Darwin>(std::move(adaptor));
 }
 
 } // namespace tpde_llvm::arm64

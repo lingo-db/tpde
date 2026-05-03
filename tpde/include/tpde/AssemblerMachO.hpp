@@ -99,6 +99,10 @@ public:
 
   void sym_def(SymRef sym, SecRef sec, u64 pos, u64 size) override;
 
+  /// Copy section/value from `src` onto `dst` (Mach-O `nlist_64`'s
+  /// n_sect / n_value). Used for aliases.
+  void sym_copy(SymRef dst, SymRef src) override;
+
   /// Mach-O has no full STV_* visibility model. The closest analogue
   /// is `N_PEXT` (private external) which makes the symbol effectively
   /// static after final linking — that's what HIDDEN means for users.

@@ -192,6 +192,26 @@ if ("aarch64" IN_LIST TPDE_TARGETS)
         FILES
             ${CMAKE_CURRENT_BINARY_DIR}/encode_template_arm64.hpp
     )
+
+    # Apple Silicon Mach-O variant. Built as a sibling class
+    # (LLVMCompilerArm64Darwin) — same instruction-selection logic as
+    # LLVMCompilerArm64, but wired to PlatformConfigDarwin
+    # (AssemblerMachOA64 + CCAssignerDarwinAArch64) and reachable via
+    # `arm64::create_compiler_darwin`. Implementation is duplicated
+    # from the ELF variant for now (rough plan §4.8 follow-up:
+    # deduplicate via templating).
+    if (APPLE)
+        target_compile_definitions(tpde_llvm_impl PRIVATE TPDE_LLVM_ARM64_DARWIN)
+        target_sources(tpde_llvm_impl PRIVATE
+            src/arm64/LLVMCompilerArm64Darwin.cpp
+
+            PRIVATE
+            FILE_SET priv_headers TYPE HEADERS
+            BASE_DIRS src
+            FILES
+                src/arm64/LLVMCompilerArm64Darwin.hpp
+        )
+    endif ()
 endif()
 
 # The library that does link against LLVM.

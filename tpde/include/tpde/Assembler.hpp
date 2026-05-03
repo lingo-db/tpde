@@ -261,6 +261,11 @@ public:
   /// distinguish (or only support a subset, like Mach-O) can opt out.
   virtual void sym_set_visibility(SymRef, SymVisibility) {}
 
+  /// Copy section + value + size from `src` into `dst`. Used by the
+  /// LLVM frontend for aliases (where two symbols point at the same
+  /// definition). Pure-virtual: every backend must implement.
+  virtual void sym_copy(SymRef dst, SymRef src) = 0;
+
   /// Section-level "do not dead-strip" hint. ELF maps to `SHF_GNU_RETAIN`,
   /// Mach-O maps to `S_ATTR_NO_DEAD_STRIP`. Default no-op.
   virtual void set_section_retain(SecRef) {}
