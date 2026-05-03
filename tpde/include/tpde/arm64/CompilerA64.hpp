@@ -398,9 +398,21 @@ public:
     const bool force_stack = vararg;
 
     if (arg.bank == RegBank{0}) {
-      if (arg.align > 8) {
-        ngrn = util::align_up(ngrn, 2);
-      }
+      // **Apple deviation from AAPCS C.7**: NGRN is *not* rounded up
+      // to the next even number for 16-byte-aligned types (i128,
+      // composites with align=16). For `void f(i64, i128)`:
+      //   AAPCS:  i64 in x0, *skip x1*, i128 in x2/x3.
+      //   Darwin: i64 in x0, i128 in x1/x2.
+      // (Apple's "Writing ARM64 code for Apple platforms" — "When
+      // passing a struct in registers, the value of NGRN may not
+      // need to be rounded up to the next even number.")
+      //
+      // For stack args, AAPCS aligns NSAA to max(8, alignof(T));
+      // Darwin uses natural alignment so a 16-byte-aligned i128 on
+      // the stack still lands at a 16-aligned offset (16 >= 8 so
+      // both rules agree there), but sub-8-byte types pack tighter
+      // on Darwin (TODO: not yet implemented — we still align to
+      // max 8 below for consistency with AAPCS sub-8-byte handling).
       if (!force_stack && ngrn + arg.consecutive < 8) {
         arg.reg = Reg{AsmReg::R0 + ngrn};
         ngrn += 1;
@@ -429,9 +441,10 @@ public:
   void assign_ret(CCAssignment &arg) override {
     assert(!arg.byval && !arg.sret);
     if (arg.bank == RegBank{0}) {
-      if (arg.align > 8) {
-        ret_ngrn = util::align_up(ret_ngrn, 2);
-      }
+      // Same Apple deviation applies on the return path: no NGRN
+      // round-up for 16-byte-aligned types. (i128 returns in x0/x1
+      // either way since the return registers start at NGRN=0, but
+      // a hypothetical multi-return convention would diverge.)
       if (ret_ngrn + arg.consecutive < 8) {
         arg.reg = Reg{AsmReg::R0 + ret_ngrn};
         ret_ngrn += 1;
