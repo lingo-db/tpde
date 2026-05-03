@@ -23,9 +23,132 @@
 
   #include <disarm64.h>
 
+  #include <atomic>
+  #include <mutex>
+  #include <vector>
+
 namespace tpde::macho {
 
+// ---------------------------------------------------------------------------
+// libunwind dynamic-registration glue
+// ---------------------------------------------------------------------------
+//
+// On modern macOS (~12.3+), libunwind exposes a callback API that lets a
+// JIT advertise a compact-unwind (and optional eh_frame) section to the
+// stack unwinder. When `_Unwind_RaiseException` (or `_Unwind_Backtrace`)
+// hits a PC that isn't in any registered DSO, libunwind iterates the
+// registered callbacks and asks each "do you know about this address?".
+//
+// Conventions worth knowing while reading the code:
+//   - The compact-unwind entries we register store function_address as
+//     **dso_base-relative offsets**, not absolute pointers (libunwind
+//     adds dso_base when reading them). The framework's
+//     `emit_compact_unwind_entry` writes absolute pointers via
+//     ARM64_RELOC_UNSIGNED, so we walk the entries post-relocation and
+//     subtract dso_base before registering. (LLVM ORC does the same.)
+//   - Registration is per-process. A small global registry is consulted
+//     by a single shared callback. Mapper instances add/remove entries
+//     in their map()/reset(); the libunwind callback is registered
+//     exactly once via std::call_once on first map().
+//   - The dynamic API is weak-linked via dlsym so older systems that
+//     lack it gracefully degrade. Without the API the unwinder cannot
+//     walk through JIT'd frames — but for non-EH workloads that's a
+//     soft failure (only matters when something tries to unwind).
+
 namespace {
+
+#pragma pack(push, 1)
+struct UnwindDynamicSections {
+  uintptr_t dso_base;
+  uintptr_t dwarf_section;
+  size_t dwarf_section_length;
+  uintptr_t compact_unwind_section;
+  size_t compact_unwind_section_length;
+};
+#pragma pack(pop)
+
+using FindCallback = int (*)(uintptr_t, UnwindDynamicSections *);
+using AddRemoveFn = int (*)(FindCallback);
+
+// One entry per live `MachOMapper` that successfully registered. Sorted
+// behavior isn't required — JIT counts are small and lookups are cold
+// (only on the unwind path).
+struct JitImage {
+  uintptr_t text_start;
+  uintptr_t text_end;
+  uintptr_t dso_base;
+  uintptr_t cu_addr;
+  size_t cu_size;
+};
+
+std::mutex g_jit_images_mutex;
+std::vector<JitImage> g_jit_images;
+
+AddRemoveFn g_unw_add = nullptr;
+AddRemoveFn g_unw_remove = nullptr;
+
+// Diagnostic counter (testing-only): incremented every time the callback
+// matches a registered JIT region. Exposed via a free function (see
+// `tpde_macho_jit_unwind_hits` below) so the M4 test can confirm
+// libunwind is actually consulting the dynamic-section callback rather
+// than falling back to frame-pointer chain walking.
+std::atomic<u64> g_unwind_callback_hits{0};
+
+int find_unwind_for_jit_pc(uintptr_t addr, UnwindDynamicSections *out) {
+  std::lock_guard<std::mutex> lock(g_jit_images_mutex);
+  for (const auto &img : g_jit_images) {
+    if (addr >= img.text_start && addr < img.text_end) {
+      out->dso_base = img.dso_base;
+      out->dwarf_section = 0; // No eh_frame fallback yet (M4 follow-up).
+      out->dwarf_section_length = 0;
+      out->compact_unwind_section = img.cu_addr;
+      out->compact_unwind_section_length = img.cu_size;
+      g_unwind_callback_hits.fetch_add(1, std::memory_order_relaxed);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+std::once_flag g_unw_init_flag;
+void init_unwind_callbacks_once() {
+  // dlsym for the dynamic-section API. These are weak symbols on Apple
+  // libunwind; older systems lack them entirely.
+  g_unw_add = reinterpret_cast<AddRemoveFn>(
+      ::dlsym(RTLD_DEFAULT, "__unw_add_find_dynamic_unwind_sections"));
+  g_unw_remove = reinterpret_cast<AddRemoveFn>(
+      ::dlsym(RTLD_DEFAULT, "__unw_remove_find_dynamic_unwind_sections"));
+  if (g_unw_add) {
+    g_unw_add(find_unwind_for_jit_pc);
+  }
+}
+
+void register_jit_image(uintptr_t text_start, uintptr_t text_end,
+                        uintptr_t dso_base, u8 *cu_data, size_t cu_size) {
+  std::call_once(g_unw_init_flag, init_unwind_callbacks_once);
+  if (!g_unw_add) {
+    // Dynamic API missing on this system — silently degrade. Future
+    // work: synthesize an `__eh_frame` blob and `__register_frame`
+    // each FDE for older macOS.
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_jit_images_mutex);
+  g_jit_images.push_back({text_start, text_end, dso_base,
+                          uintptr_t(cu_data), cu_size});
+}
+
+void unregister_jit_image(uintptr_t text_start) {
+  if (!g_unw_add) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_jit_images_mutex);
+  for (auto it = g_jit_images.begin(); it != g_jit_images.end(); ++it) {
+    if (it->text_start == text_start) {
+      g_jit_images.erase(it);
+      return;
+    }
+  }
+}
 
 // Bit blend, identical to the helper in ElfMapper — overwrite the bits in
 // `mask` of the 32-bit instruction at `pc` with the matching bits of `data`.
@@ -51,9 +174,21 @@ Perm perm_of_section(const DataSection &sec) {
 
 } // anonymous namespace
 
+// Test-only accessor for `g_unwind_callback_hits`. Defined out of line and
+// non-templated so the symbol is straightforward to reference from
+// outside the translation unit without visibility/linkage friction.
+u64 tpde_macho_jit_unwind_hits() {
+  return g_unwind_callback_hits.load(std::memory_order_relaxed);
+}
+
 void MachOMapper::reset() {
   if (!mapped_addr) {
     return;
+  }
+  if (cu_section_addr) {
+    unregister_jit_image(reinterpret_cast<uintptr_t>(mapped_addr));
+    cu_section_addr = nullptr;
+    cu_section_size = 0;
   }
   ::munmap(mapped_addr, mapped_size);
   mapped_addr = nullptr;
@@ -359,6 +494,52 @@ bool MachOMapper::map(AssemblerMachO &assembler, SymbolResolver resolver) {
     }
   }
 
+  // ----- Step 6.5: prepare the compact-unwind section for libunwind
+  // dynamic registration. The .o-style entries the assembler emitted use
+  // ARM64_RELOC_UNSIGNED for `function_address`, so after relocation
+  // those slots hold absolute pointers. libunwind's dynamic-section API
+  // wants them as **dso_base-relative offsets**: the unwinder adds
+  // `dso_base` (which we set to `mapped_addr`) when consulting the
+  // entry. Walk every 32-byte entry and rewrite function_address (and
+  // personality/lsda once those are non-zero in M4 follow-up).
+  //
+  // We also remember the section's mapped location so `reset()` can
+  // unregister via the cached `text_start` key.
+  for (size_t i = 0; i < assembler.sections.size(); ++i) {
+    if (!assembler.sections[i]) {
+      continue;
+    }
+    DataSection &sec = *assembler.sections[i];
+    if (sec.size() == 0) {
+      continue;
+    }
+    // The (segname, sectname) names live in the SECTION_DESCR table by
+    // index; the simplest discriminator we have here is the original
+    // SectionKind value via the `name` field, which AssemblerMachO sets
+    // to `unsigned(SectionKind)`. The `__compact_unwind` slot is index
+    // `SectionKind::CompactUnwind`.
+    if (sec.name != unsigned(SectionKind::CompactUnwind)) {
+      continue;
+    }
+    cu_section_addr = mapped_addr + sec.addr;
+    cu_section_size = sec.size();
+    // Walk 32-byte entries. function_address is at offset 0.
+    constexpr size_t kEntrySize = 32;
+    assert(cu_section_size % kEntrySize == 0 &&
+           "compact_unwind section size must be a multiple of 32");
+    uintptr_t dso_base = reinterpret_cast<uintptr_t>(mapped_addr);
+    for (size_t off = 0; off < cu_section_size; off += kEntrySize) {
+      u8 *entry = cu_section_addr + off;
+      uintptr_t abs;
+      std::memcpy(&abs, entry, sizeof(uintptr_t));
+      uintptr_t rel = abs - dso_base;
+      std::memcpy(entry, &rel, sizeof(uintptr_t));
+      // Personality (offset 16) and LSDA (offset 24) are zero today;
+      // when M4 follow-up wires them up they'll need the same fix-up.
+    }
+    break; // only one compact_unwind section per assembler
+  }
+
   // ----- Step 7: flip back to execute mode and invalidate the I-cache.
   ::pthread_jit_write_protect_np(1);
   ::sys_icache_invalidate(mapped_addr, mapped_size);
@@ -366,6 +547,20 @@ bool MachOMapper::map(AssemblerMachO &assembler, SymbolResolver resolver) {
   if (!success) {
     reset();
     return false;
+  }
+
+  // ----- Step 8: register with libunwind. Conservatively use the whole
+  // mapped region as the "text" range — libunwind only consults the
+  // callback on actual unwind, and we don't have a tighter bound that
+  // covers all RX sub-regions cheaply. Mismatched lookups (e.g., for
+  // PLT trampoline addresses) just fall through to "no info", which is
+  // correct: the trampolines are leaf-and-tail-call so the unwinder
+  // doesn't try to step out of them.
+  if (cu_section_addr) {
+    register_jit_image(reinterpret_cast<uintptr_t>(mapped_addr),
+                       reinterpret_cast<uintptr_t>(mapped_addr + mapped_size),
+                       reinterpret_cast<uintptr_t>(mapped_addr),
+                       cu_section_addr, cu_section_size);
   }
 
   return true;

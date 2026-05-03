@@ -144,6 +144,13 @@ if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
                                         src/test/TestIR.cpp)
     target_link_libraries(tpde_macho_jit_test PRIVATE tpde)
     target_include_directories(tpde_macho_jit_test PRIVATE src/test)
+    # The test calls `_Unwind_Backtrace` to verify libunwind dynamic
+    # registration. The rest of TPDE is built with `-fno-exceptions`,
+    # which clang takes as license to drop most unwind metadata at -O3
+    # — leaving the unwinder with nothing to step through. Force unwind
+    # tables for this one TU so libunwind can actually walk the host
+    # frames around the JIT'd one.
+    target_compile_options(tpde_macho_jit_test PRIVATE -funwind-tables)
     # Ad-hoc sign so MAP_JIT works on Apple Silicon without an entitlement.
     add_custom_command(TARGET tpde_macho_jit_test POST_BUILD
         COMMAND codesign --sign - --force $<TARGET_FILE:tpde_macho_jit_test>

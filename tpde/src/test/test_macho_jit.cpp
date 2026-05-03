@@ -10,14 +10,27 @@
 // (PlatformConfigDarwin, Mach-O assembler, MAP_JIT mapper) is exercised in
 // isolation without touching the existing ELF-LIT test infrastructure.
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <execinfo.h>
+#include <unwind.h>
 
 #include "TestIR.hpp"
 #include "TestIRAdaptor.hpp"
 #include "tpde/AssemblerMachO.hpp"
 #include "tpde/MachOMapper.hpp"
 #include "tpde/arm64/CompilerA64.hpp"
+
+// Diagnostic accessor exposed by `MachOMapper.cpp` so the EH test can
+// confirm that libunwind's dynamic-section callback is actually being
+// consulted (vs. backtrace silently falling back to FP-chain walking,
+// which would let it traverse JIT'd frames even without registration
+// and mask a broken integration).
+namespace tpde::macho {
+u64 tpde_macho_jit_unwind_hits();
+}
 
 namespace {
 using namespace tpde;
@@ -135,6 +148,36 @@ struct TestIRCompilerA64Darwin
 // the compiler doesn't optimize it away as unreachable from main().
 extern "C" __attribute__((used)) u64 host_doubler(u64 x) { return x * 2; }
 
+// Walk via `_Unwind_Backtrace`, which on macOS goes through libunwind
+// (and therefore consults the dynamic-section callbacks our
+// `MachOMapper` registers). `backtrace()` from <execinfo.h> would NOT
+// — Apple's libsystem_c `backtrace()` is a plain FP-chain walker that
+// doesn't ask libunwind for anything.
+struct WalkState {
+  int count = 0;
+};
+static _Unwind_Reason_Code unwind_count_cb(struct _Unwind_Context *ctx,
+                                           void *arg) {
+  auto *st = static_cast<WalkState *>(arg);
+  if (_Unwind_GetIP(ctx) == 0) {
+    return _URC_END_OF_STACK;
+  }
+  st->count++;
+  return _URC_NO_REASON;
+}
+
+extern "C" __attribute__((noinline, used)) u64 host_walk_stack(u64 sentinel) {
+  WalkState st;
+  _Unwind_Backtrace(unwind_count_cb, &st);
+  return (u64(uint32_t(st.count)) << 32) | uint32_t(sentinel);
+}
+
+__attribute__((noinline)) static int native_walk_count() {
+  WalkState st;
+  _Unwind_Backtrace(unwind_count_cb, &st);
+  return st.count;
+}
+
 // Compile, JIT-link, and call a TPDE test-IR snippet. Returns the named
 // function as a typed function pointer; the mapper is *retained* in `out`
 // so the JIT pages stay mapped for the duration of the call.
@@ -158,6 +201,9 @@ static Fn jit_compile(const char *src,
                       // Host-side functions exposed for the cross-DSO test.
                       if (name == "host_doubler") {
                         return reinterpret_cast<void *>(&host_doubler);
+                      }
+                      if (name == "host_walk_stack") {
+                        return reinterpret_cast<void *>(&host_walk_stack);
                       }
                       // Anything else is unexpected for these test cases.
                       std::fprintf(stderr,
@@ -190,6 +236,12 @@ static Fn jit_compile(const char *src,
 
 int main(int argc, char *argv[]) {
   using AddFn = u64 (*)(u64, u64);
+
+  // ----- Sanity probe: does the host's _Unwind_Backtrace work at all? -----
+  {
+    int n = native_walk_count();
+    std::printf("native_walk_count = %d\n", n);
+  }
 
   // Optional `--obj-out <path> [<src-file>]` mode: emit a Mach-O .o for
   // either the default `add(a,b)` IR or an IR file the user supplies.
@@ -288,7 +340,59 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // ----- Case 3: intra-module call (exercises ARM64_RELOC_BRANCH26) ---------
+  // ----- Case 3: stack walk through a JIT'd frame --------------------------
+  // Validates the M4 libunwind dynamic-registration plumbing. We JIT a
+  // function `walker(x)` that calls `host_walk_stack(x)` from the host;
+  // host_walk_stack walks the stack via `backtrace()`. For the unwinder
+  // to step past the JIT'd frame back into main() it must discover the
+  // JIT region's compact-unwind entry through the dynamic callback we
+  // registered in `MachOMapper::map`.
+  //
+  // Backtrace can technically also walk an FP chain on AArch64 without
+  // any unwind info, so frame count alone isn't a strict proof. The
+  // strong signal is the diagnostic counter
+  // `tpde_macho_jit_unwind_hits` incremented inside our find-callback
+  // — it's only nonzero if libunwind actually called us back.
+  {
+    using namespace tpde::macho;
+    u64 hits_before = tpde_macho_jit_unwind_hits();
+    macho::MachOMapper mapper;
+    auto walker = jit_compile<u64 (*)(u64)>(
+        "declare @host_walk_stack(%a)\n"
+        "define @walker(%x) {\n"
+        "entry:\n"
+        "  %r = call @host_walk_stack, %x\n"
+        "  ret %r\n"
+        "}\n",
+        "walker", mapper);
+    u64 r = walker(0xfeedface);
+    u64 hits_after = tpde_macho_jit_unwind_hits();
+    u32 frame_count = u32(r >> 32);
+    u32 sentinel = u32(r);
+    std::printf(
+        "walker(0xfeedface) -> frames=%u sentinel=0x%x cb_hits=%llu\n",
+        frame_count, sentinel,
+        static_cast<unsigned long long>(hits_after - hits_before));
+    if (sentinel != 0xfeedface) {
+      std::fprintf(stderr, "FAIL: sentinel mismatch\n");
+      return 1;
+    }
+    // Strong signal: did libunwind ASK us about the JIT'd PC? If yes,
+    // the registration is in place and the callback's lookup table
+    // covers the JIT region. The actual frame count from
+    // `_Unwind_Backtrace` is a weaker signal (it depends on how
+    // libunwind decides to step through our compact-unwind encoding,
+    // which is exercised more thoroughly by EH end-to-end tests
+    // queued for M4 follow-up).
+    if (hits_after == hits_before) {
+      std::fprintf(stderr,
+                   "FAIL: libunwind never consulted the dynamic-section "
+                   "callback — JIT compact-unwind registration not wired\n");
+      return 1;
+    }
+  }
+
+  // ----- Case 4: intra-module call (exercises ARM64_RELOC_BRANCH26) ---------
   // `caller(x) -> add(x, x) + x` — caller invokes add, both live in the same
   // JIT region. The branch fits easily within 128 MiB so no PLT trampoline
   // is needed; the BRANCH26 relocation is resolved in-place.
