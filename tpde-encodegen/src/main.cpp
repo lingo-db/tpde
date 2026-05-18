@@ -105,19 +105,35 @@ int main(const int argc, char *argv[]) {
   llvm::Triple the_triple(triple);
 #endif
 
-  // Required so that our target triple is actually found
-#ifdef TPDE_ARCH_X86_64
-  LLVMInitializeX86TargetInfo();
-  LLVMInitializeX86Target();
-  LLVMInitializeX86TargetMC();
-  LLVMInitializeX86AsmPrinter();
+  // Initialize only the LLVM target of the module being processed: this keeps
+  // tool startup cheap (no point registering targets we will not use), and the
+  // per-target LLVMInitialize<Target>* symbols are only declared for targets
+  // the linked LLVM was built with -- so the branches for unavailable targets
+  // must be compiled out (TPDE_ENCGEN_HAVE_* are set by CMake from
+  // LLVM_TARGETS_TO_BUILD).
+  switch (the_triple.getArch()) {
+#ifdef TPDE_ENCGEN_HAVE_X86
+  case llvm::Triple::x86_64:
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+    LLVMInitializeX86AsmPrinter();
+    break;
 #endif
-#ifdef TPDE_ARCH_AARCH64
-  LLVMInitializeAArch64TargetInfo();
-  LLVMInitializeAArch64Target();
-  LLVMInitializeAArch64TargetMC();
-  LLVMInitializeAArch64AsmPrinter();
+#ifdef TPDE_ENCGEN_HAVE_AARCH64
+  case llvm::Triple::aarch64:
+    LLVMInitializeAArch64TargetInfo();
+    LLVMInitializeAArch64Target();
+    LLVMInitializeAArch64TargetMC();
+    LLVMInitializeAArch64AsmPrinter();
+    break;
 #endif
+  default:
+    std::cerr << std::format(
+        "target architecture of triple '{}' is not available in this build\n",
+        the_triple.str());
+    return 1;
+  }
 
   std::string error;
   const llvm::Target *target =

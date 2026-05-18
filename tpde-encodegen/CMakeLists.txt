@@ -15,6 +15,17 @@ set(TPDE_LINK_LLVM_STATIC FALSE CACHE BOOL "Should LLVM be linked statically?")
 target_include_directories(tpde_encodegen SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
 target_compile_definitions(tpde_encodegen PRIVATE ${LLVM_DEFINITIONS_LIST})
+
+# encodegen can only initialize LLVM targets the linked LLVM was built with:
+# the per-target LLVMInitialize<Target>* symbols are only declared for those.
+# Tell main.cpp which ones are available so it compiles against any LLVM
+# (e.g. an X86-only LLVM, as used by the LingoDB Python wheel build).
+if ("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+    target_compile_definitions(tpde_encodegen PRIVATE TPDE_ENCGEN_HAVE_X86)
+endif ()
+if ("AArch64" IN_LIST LLVM_TARGETS_TO_BUILD)
+    target_compile_definitions(tpde_encodegen PRIVATE TPDE_ENCGEN_HAVE_AARCH64)
+endif ()
 if (NOT LLVM_ENABLE_RTTI)
     target_compile_options(tpde_encodegen PRIVATE "-fno-rtti")
 endif ()
