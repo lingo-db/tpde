@@ -1224,24 +1224,43 @@ bool create_encode_function(llvm::MachineFunction *func,
     const auto reg = state.return_regs[idx];
     auto name = state.target->reg_name_lower(reg);
     if (state.used_regs[reg] > 0) {
-      // The return register is aliased to result_idx (i.e. the generated code
+      // The return register is aliased to result_idx (the generated code
       // declared `ValuePart &scratch_<reg> = result_idx`). Instruction
-      // selection normally materializes it. But if the register is an
-      // undefined live-in -- the result part is a parameter returned
-      // unmodified, with no defining instruction -- nothing ever wrote it,
-      // leaving the result part with neither a register nor a stack slot.
-      // Detect this via ret_defs (populated for single-block functions ending
-      // in a return): a pure pass-through return register has no defining
-      // instruction (ret_defs.lookup(reg) == nullptr). In that case,
-      // materialize the result part from its source operand.
+      // selection normally materializes it. But when the value reaching the
+      // result is a function parameter delivered only through register-to-
+      // register moves -- which the generator elides -- nothing ever writes
+      // the result ValuePart, leaving it with no register or stack slot
+      // (e.g. the low half of arith_{sext,zext}_i64_i128: `rax = mov rdi`).
+      //
+      // Find the source parameter: an operand-ref a move propagated onto
+      // this register, or -- when the register is itself a live-in -- its
+      // parameter directly (the operand-ref may have been erased when a move
+      // killed it). Then materialize the result from it, but guarded at
+      // runtime by `!has_reg()` so it is a no-op whenever instruction
+      // selection already produced a value (a materialized result is locked,
+      // i.e. has_reg(), until this loop unlocks it).
+      std::string src_ref;
       if (auto it = state.asm_operand_refs.find(reg);
-          func->size() == 1 && func->begin()->back().isReturn() &&
-          state.ret_defs.lookup(reg) == nullptr &&
           it != state.asm_operand_refs.end()) {
-        os << "  try_salvage_or_materialize(" << it->second << ", scratch_"
+        src_ref = it->second;
+        state.asm_operand_refs.erase(it);
+      } else {
+        unsigned pidx = 0;
+        for (auto li = func->getRegInfo().livein_begin(),
+                  le = func->getRegInfo().livein_end();
+             li != le;
+             ++li, ++pidx) {
+          if (state.target->reg_id_from_mc_reg(li->first) == reg) {
+            src_ref = std::format("param_{}", pidx);
+            break;
+          }
+        }
+      }
+      if (!src_ref.empty()) {
+        os << "  if (!result_" << idx << ".has_reg())\n";
+        os << "    try_salvage_or_materialize(" << src_ref << ", scratch_"
            << name << ", " << state.target->reg_bank(reg) << ", "
            << reg_size_bytes(func, reg) << ");\n";
-        state.asm_operand_refs.erase(it);
       }
       os << "  if (result_" << idx << ".has_assignment())\n";
       os << "    result_" << idx << ".unlock(derived());\n";

@@ -200,13 +200,16 @@ void EncodeCompiler<Adaptor, Derived, BaseTy, Config>::
     try_salvage_or_materialize(GenericValuePart &gv,
                                ValuePart      &dst_scratch,
                                u8              ,
-                               u32             size) {
+                               u32             ) {
     AsmReg reg = derived()->gval_as_reg_reuse(gv, dst_scratch);
     if (!dst_scratch.has_reg()) {
         dst_scratch.alloc_reg(derived());
     }
     if (dst_scratch.cur_reg() != reg) {
-        derived()->mov(dst_scratch.cur_reg(), reg, size);
+        // Copy as many bytes as the destination value part holds; the caller's
+        // `size` cannot be trusted here (it is derived from an encodegen
+        // register id, not an llvm::Register).
+        derived()->mov(dst_scratch.cur_reg(), reg, dst_scratch.part_size());
     }
 }
 
