@@ -1222,12 +1222,31 @@ bool create_encode_function(llvm::MachineFunction *func,
   // backups
   for (unsigned idx = 0; idx < state.num_ret_regs; ++idx) {
     const auto reg = state.return_regs[idx];
+    auto name = state.target->reg_name_lower(reg);
     if (state.used_regs[reg] > 0) {
+      // The return register is aliased to result_idx (i.e. the generated code
+      // declared `ValuePart &scratch_<reg> = result_idx`). Instruction
+      // selection normally materializes it. But if the register is an
+      // undefined live-in -- the result part is a parameter returned
+      // unmodified, with no defining instruction -- nothing ever wrote it,
+      // leaving the result part with neither a register nor a stack slot.
+      // Detect this via ret_defs (populated for single-block functions ending
+      // in a return): a pure pass-through return register has no defining
+      // instruction (ret_defs.lookup(reg) == nullptr). In that case,
+      // materialize the result part from its source operand.
+      if (auto it = state.asm_operand_refs.find(reg);
+          func->size() == 1 && func->begin()->back().isReturn() &&
+          state.ret_defs.lookup(reg) == nullptr &&
+          it != state.asm_operand_refs.end()) {
+        os << "  try_salvage_or_materialize(" << it->second << ", scratch_"
+           << name << ", " << state.target->reg_bank(reg) << ", "
+           << reg_size_bytes(func, reg) << ");\n";
+        state.asm_operand_refs.erase(it);
+      }
       os << "  if (result_" << idx << ".has_assignment())\n";
       os << "    result_" << idx << ".unlock(derived());\n";
       continue;
     }
-    auto name = state.target->reg_name_lower(reg);
 
     if (auto it = state.asm_operand_refs.find(reg);
         it != state.asm_operand_refs.end()) {
