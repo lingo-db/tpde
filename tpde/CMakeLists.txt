@@ -32,9 +32,11 @@ endif ()
 target_sources(tpde PRIVATE
     src/Assembler.cpp
     src/AssemblerElf.cpp
+    src/AssemblerMachO.cpp
     src/base.cpp
     src/ElfMapper.cpp
     src/FunctionWriter.cpp
+    src/MachOMapper.cpp
     src/StringTable.cpp
     src/ValueAssignment.cpp
     src/util/SmallVector.cpp
@@ -46,6 +48,7 @@ target_sources(tpde PRIVATE
         include/tpde/Analyzer.hpp
         include/tpde/Assembler.hpp
         include/tpde/AssemblerElf.hpp
+        include/tpde/AssemblerMachO.hpp
         include/tpde/AssignmentPartRef.hpp
         include/tpde/base.hpp
         include/tpde/Compiler.hpp
@@ -57,6 +60,8 @@ target_sources(tpde PRIVATE
         include/tpde/FunctionWriter.hpp
         include/tpde/GenericValuePart.hpp
         include/tpde/IRAdaptor.hpp
+        include/tpde/MachO.hpp
+        include/tpde/MachOMapper.hpp
         include/tpde/RegisterFile.hpp
         include/tpde/ScratchReg.hpp
         include/tpde/StringTable.hpp
@@ -104,6 +109,7 @@ target_sources(tpde PRIVATE
     BASE_DIRS include
     FILES
         include/tpde/arm64/CompilerA64.hpp
+        include/tpde/arm64/PlatformConfigDarwin.hpp
         include/tpde/arm64/FunctionWriterA64.hpp
 )
 
@@ -133,13 +139,31 @@ target_sources(tpde_test PRIVATE
 )
 
 
+# Native macOS ARM64 checks also run through the core LIT suite.
+if (TPDE_INCLUDE_TESTS AND APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64"
+    AND "aarch64" IN_LIST TPDE_TARGETS)
+    add_executable(tpde_macho_jit_test src/test/test_macho_jit.cpp
+                                        src/test/test_macho_assembler.cpp
+                                        src/test/TestIR.cpp)
+    target_link_libraries(tpde_macho_jit_test PRIVATE tpde)
+    target_include_directories(tpde_macho_jit_test PRIVATE src/test)
+    # Exercise native exceptions through a JIT frame even in no-EH builds.
+    target_compile_options(tpde_macho_jit_test PRIVATE
+        -funwind-tables -fexceptions)
+
+endif ()
+
+
 # Tests
 
 if (TPDE_INCLUDE_TESTS)
+    if (TARGET tpde_macho_jit_test)
+        set(TPDE_NATIVE_TESTS tpde_macho_jit_test)
+    endif ()
     # configure lit.site.cfg.py
     configure_file(test/filetest/lit.site.cfg.py.in test/filetest/lit.site.cfg.py @ONLY)
     add_tpde_lit_testsuite(check-tpde-core "${CMAKE_CURRENT_BINARY_DIR}/test/filetest"
-        DEPENDS tpde_test)
+        DEPENDS tpde_test ${TPDE_NATIVE_TESTS})
 
     # Backwards-compatibility
     add_custom_target(tpde_filetest DEPENDS check-tpde-core)

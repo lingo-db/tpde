@@ -7,9 +7,13 @@ import os
 config.tpde_src_root = r'@CMAKE_CURRENT_SOURCE_DIR@'
 config.tpde_obj_root = r'@CMAKE_CURRENT_BINARY_DIR@'
 
+config.cxx = r'@CMAKE_CXX_COMPILER@'
 config.system_name = r'@CMAKE_SYSTEM_NAME@'
+config.system_processor = r'@CMAKE_SYSTEM_PROCESSOR@'
 config.llvm_version = r'@LLVM_VERSION_MAJOR@.@LLVM_VERSION_MINOR@'
 config.llvm_tools_dir = r'@LLVM_TOOLS_BINARY_DIR@'
+
+config.tpde_targets = "@TPDE_TARGETS@".split(";")
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

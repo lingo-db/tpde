@@ -1,0 +1,14 @@
+; SPDX-FileCopyrightText: 2026 Contributors to TPDE <https://tpde.org>
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; REQUIRES: native-macho
+; RUN: tpde_macho_jit_test
+; RUN: not --crash tpde_macho_jit_test --reject-vararg-helper
+; RUN: tpde_macho_jit_test --obj-out %t.o %s
+; RUN: %python %S/Inputs/macho-unwind.py %cxx %t.o %t
+declare @thrower()
+define @bridge(%x!) {
+entry:
+  %r = call @thrower
+  %sum = add %x, %r
+  ret %sum
+}

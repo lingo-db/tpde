@@ -4,6 +4,7 @@
 
 import lit.formats
 import os
+import sys
 
 from lit.llvm import llvm_config
 
@@ -25,3 +26,10 @@ config.substitutions.append(('%objdump', 'llvm-objdump -d -r --no-show-raw-insn 
 
 config.available_features.add(f'llvm{config.llvm_version}')
 config.available_features.add(f'os-{config.system_name.lower()}')
+
+if "aarch64" in config.tpde_targets and config.system_name == 'Darwin' and config.system_processor in ('arm64', 'aarch64'):
+    config.available_features.add('native-macho')
+
+config.substitutions.append(("%python", sys.executable))
+
+config.substitutions.append(('%cxx', config.cxx))

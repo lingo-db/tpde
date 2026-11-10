@@ -70,9 +70,16 @@ namespace elf {
 class AssemblerElf;
 } // namespace elf
 
+namespace macho {
+class AssemblerMachO;
+class MachOMapper;
+} // namespace macho
+
 struct DataSection {
   friend class Assembler;
   friend class elf::AssemblerElf;
+  friend class macho::AssemblerMachO;
+  friend class macho::MachOMapper;
 
   /// 256 bytes inline storage is enough for 10 relocations, which is a typical
   /// number for a single function (relevant for COMDAT sections with one

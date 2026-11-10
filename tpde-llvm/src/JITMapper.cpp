@@ -4,8 +4,6 @@
 #include "JITMapper.hpp"
 
 #include "tpde-llvm/LLVMCompiler.hpp"
-#include "tpde/AssemblerElf.hpp"
-#include "tpde/ElfMapper.hpp"
 
 #include <llvm/Support/TimeProfiler.h>
 
@@ -14,7 +12,15 @@ namespace tpde_llvm {
 bool JITMapperImpl::map(tpde::elf::AssemblerElf &assembler,
                         tpde::elf::ElfMapper::SymbolResolver resolver) {
   llvm::TimeTraceScope time_scope("TPDE_JITMap");
-  return mapper.map(assembler, resolver);
+  auto &m = mapper.emplace<tpde::elf::ElfMapper>();
+  return m.map(assembler, resolver);
+}
+
+bool JITMapperImpl::map(tpde::macho::AssemblerMachO &assembler,
+                        tpde::macho::MachOMapper::SymbolResolver resolver) {
+  llvm::TimeTraceScope time_scope("TPDE_JITMap");
+  auto &m = mapper.emplace<tpde::macho::MachOMapper>();
+  return m.map(assembler, resolver);
 }
 
 JITMapper::JITMapper(std::unique_ptr<JITMapperImpl> impl)

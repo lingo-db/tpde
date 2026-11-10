@@ -294,7 +294,9 @@ struct PlatformConfig : CompilerConfigDefault {
   static constexpr bool FRAME_INDEXING_NEGATIVE = false;
   static constexpr u32 PLATFORM_POINTER_SIZE = 8;
   static constexpr u32 NUM_BANKS = 2;
-  /// Bytes reserved for the variadic argument register save area.
+  /// AAPCS64 saves x0..x7 and v0..v7 for its 32-byte va_list
+  /// (stack, gr_top, vr_top, gr_offs, vr_offs). A zero-sized save area
+  /// selects the stack-only ABI, whose va_list is a single pointer.
   static constexpr u32 VARARG_REG_SAVE_SIZE = 8 * 8 + 8 * 16;
 };
 
@@ -549,6 +551,8 @@ struct CompilerA64 : BaseTy<Adaptor, Derived, Config> {
   ///
   /// Targets can be a symbol (call to PLT with relocation), or an indirect
   /// call to a ValuePart. Result is an optional reference.
+  /// Darwin variadic calls require CallBuilder with an explicit named/unnamed
+  /// argument boundary; variable_args=true is unsupported by this helper.
   void generate_call(std::variant<SymRef, ValuePart> &&target,
                      std::span<CallArg> arguments,
                      typename Base::ValueRef *result,
@@ -747,17 +751,18 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_begin(
     // with a constant offset from the frame pointer. Add 16 bytes to maintain
     // alignment.
     this->stack.frame_size += Config::VARARG_REG_SAVE_SIZE + 16;
-    this->text_writer.ensure_space(4 * 8);
-    ASMNC(STPx, DA_GP(0), DA_GP(1), DA_SP, reg_save_frame_off);
-    ASMNC(STPx, DA_GP(2), DA_GP(3), DA_SP, reg_save_frame_off + 16);
-    ASMNC(STPx, DA_GP(4), DA_GP(5), DA_SP, reg_save_frame_off + 32);
-    ASMNC(STPx, DA_GP(6), DA_GP(7), DA_SP, reg_save_frame_off + 48);
-    ASMNC(STPq, DA_V(0), DA_V(1), DA_SP, reg_save_frame_off + 64);
-    ASMNC(STPq, DA_V(2), DA_V(3), DA_SP, reg_save_frame_off + 96);
-    ASMNC(STPq, DA_V(4), DA_V(5), DA_SP, reg_save_frame_off + 128);
-    ASMNC(STPq, DA_V(6), DA_V(7), DA_SP, reg_save_frame_off + 160);
+    if constexpr (Config::VARARG_REG_SAVE_SIZE != 0) {
+      this->text_writer.ensure_space(4 * 8);
+      ASMNC(STPx, DA_GP(0), DA_GP(1), DA_SP, reg_save_frame_off);
+      ASMNC(STPx, DA_GP(2), DA_GP(3), DA_SP, reg_save_frame_off + 16);
+      ASMNC(STPx, DA_GP(4), DA_GP(5), DA_SP, reg_save_frame_off + 32);
+      ASMNC(STPx, DA_GP(6), DA_GP(7), DA_SP, reg_save_frame_off + 48);
+      ASMNC(STPq, DA_V(0), DA_V(1), DA_SP, reg_save_frame_off + 64);
+      ASMNC(STPq, DA_V(2), DA_V(3), DA_SP, reg_save_frame_off + 96);
+      ASMNC(STPq, DA_V(4), DA_V(5), DA_SP, reg_save_frame_off + 128);
+      ASMNC(STPq, DA_V(6), DA_V(7), DA_SP, reg_save_frame_off + 160);
+    }
   }
-
   this->func_arg_stack_add_off = ~0u;
 }
 
@@ -820,21 +825,26 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::prologue_end(
     ASM(ADDxi, stack_reg, DA_SP, 0);
   }
   u32 named_size = cc_assigner->get_stack_size();
+  if constexpr (Config::VARARG_REG_SAVE_SIZE == 0) {
+    named_size = util::align_up(named_size, 8);
+  }
   if (named_size && !ASMIF(ADDxi, stack_reg, stack_reg, named_size)) {
     materialize_constant(named_size, Config::GP_BANK, 8, permanent_scratch_reg);
     ASM(ADDx, stack_reg, stack_reg, permanent_scratch_reg);
   }
   ASM(STRxu, stack_reg, DA_GP(29),
       reg_save_frame_off + Config::VARARG_REG_SAVE_SIZE);
-  // TODO: extract ngrn/nsrn from CCAssigner
-  // TODO: this isn't quite accurate, e.g. for (i128, i128, i128, i64,
-  // i128), this should be 8 but will end up with 7.
-  const CCInfo &cc_info = cc_assigner->get_ccinfo();
-  auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
-  u32 ngrn = 8 - util::cnt_lz<u16>((arg_regs & 0xff) << 8 | 0x80);
-  u32 nsrn = 8 - util::cnt_lz<u16>(((arg_regs >> 32) & 0xff) << 8 | 0x80);
-  this->scalar_arg_count = ngrn;
-  this->vec_arg_count = nsrn;
+  if constexpr (Config::VARARG_REG_SAVE_SIZE != 0) {
+    // TODO: extract ngrn/nsrn from CCAssigner
+    // TODO: this isn't quite accurate, e.g. for (i128, i128, i128, i64,
+    // i128), this should be 8 but will end up with 7.
+    const CCInfo &cc_info = cc_assigner->get_ccinfo();
+    auto arg_regs = this->register_file.allocatable & cc_info.arg_regs;
+    u32 ngrn = 8 - util::cnt_lz<u16>((arg_regs & 0xff) << 8 | 0x80);
+    u32 nsrn = 8 - util::cnt_lz<u16>(((arg_regs >> 32) & 0xff) << 8 | 0x80);
+    this->scalar_arg_count = ngrn;
+    this->vec_arg_count = nsrn;
+  }
 }
 
 template <IRAdaptor Adaptor,
@@ -1467,8 +1477,10 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::materialize_constant(
     this->reloc_text(
         sym, Config::Assembler::RELOC_PAGE21, this->text_writer.offset(), 0);
     ASMNC(ADRP, permanent_scratch_reg, 0, 0);
-    this->reloc_text(
-        sym, Config::Assembler::RELOC_PAGEOFF12_LDST128, this->text_writer.offset(), 0);
+    this->reloc_text(sym,
+                     Config::Assembler::RELOC_PAGEOFF12_LDST128,
+                     this->text_writer.offset(),
+                     0);
     ASMNC(LDRqu, dst, permanent_scratch_reg, 0);
     return;
   }
@@ -1907,8 +1919,14 @@ void CompilerA64<Adaptor, Derived, BaseTy, Config>::generate_call(
     std::variant<SymRef, ValuePart> &&target,
     std::span<CallArg> arguments,
     typename Base::ValueRef *result,
-    bool) {
-  CCAssignerAAPCS assigner;
+    bool variable_args) {
+  if constexpr (Config::VARARG_REG_SAVE_SIZE == 0) {
+    if (variable_args) {
+      TPDE_FATAL("Darwin variadic calls require CallBuilder::start_varargs "
+                 "after the named arguments");
+    }
+  }
+  typename Config::DefaultCCAssigner assigner;
   CallBuilder cb{*derived(), assigner};
   for (auto &arg : arguments) {
     cb.add_arg(std::move(arg));
@@ -2007,6 +2025,10 @@ template <IRAdaptor Adaptor,
 CompilerA64<Adaptor, Derived, BaseTy, Config>::ScratchReg
     CompilerA64<Adaptor, Derived, BaseTy, Config>::tls_get_addr(
         SymRef sym, TLSModel model) {
+  if constexpr (!std::is_base_of_v<elf::AssemblerElf,
+                                   typename Config::Assembler>) {
+    TPDE_FATAL("TLS is unsupported by this AArch64 object format");
+  }
   switch (model) {
   default: // TODO: implement optimized access for non-gd-model
   case TLSModel::GlobalDynamic: {

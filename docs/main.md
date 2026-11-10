@@ -2,7 +2,8 @@
 
 TPDE is a fast compiler back-end framework that adapts to existing SSA IRs.
 The primary goal is low-latency compilation while maintaining reasonable (`-O0`) code quality, e.g., as baseline compiler for JIT compilation or unoptimized builds.
-Currently, TPDE only targets ELF-based x86-64 and AArch64 (Armv8.1) platforms.
+TPDE targets ELF-based x86-64 and AArch64 (Armv8.1) platforms, with experimental support for Mach-O object emission and native JIT execution on macOS ARM64.
+See \subpage tpde-macos for requirements and limitations.
 
 This repository contains:
 

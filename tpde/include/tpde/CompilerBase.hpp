@@ -90,6 +90,8 @@ public:
   /// Some calling conventions need different call behavior when calling a
   /// vararg function.
   virtual bool is_vararg() const { return false; }
+  /// Begin unnamed arguments after the fixed parameters of a variadic call.
+  virtual void start_varargs() {}
   virtual void assign_ret(CCAssignment &cca) = 0;
 };
 
@@ -263,6 +265,7 @@ public:
     /// CCAssigner. If no register bank is assigned, the register bank and size
     /// are retrieved from the value part, otherwise, the size must be set, too.
     void add_arg(ValuePart &&vp, CCAssignment cca);
+    void start_varargs() { assigner.start_varargs(); }
     /// Add a full IR value as argument, with an explicit number of parts.
     /// Values are decomposed into their parts and are typically either fully
     /// in registers or fully on the stack (except CallArg::Flag::allow_split).

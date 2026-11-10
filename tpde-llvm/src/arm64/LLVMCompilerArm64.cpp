@@ -12,6 +12,7 @@
 #include "LLVMCompilerBase.hpp"
 #include "encode_template_arm64.hpp"
 #include "tpde/arm64/CompilerA64.hpp"
+#include "tpde/arm64/PlatformConfigDarwin.hpp"
 #include "tpde/base.hpp"
 
 namespace tpde_llvm::arm64 {
@@ -64,6 +65,19 @@ struct LLVMCompilerArm64
     static_assert(tpde::Compiler<LLVMCompilerArm64, Platform>);
   }
 
+  bool validate_module(const llvm::Module &mod) {
+    if constexpr (!std::is_same_v<Platform, tpde::a64::PlatformConfigDarwin>) {
+      return true;
+    }
+    for (const auto &gv : mod.global_objects()) {
+      if (gv.isThreadLocal() || gv.hasSection() || gv.hasComdat()) {
+        TPDE_LOG_ERR("Mach-O TLS, custom sections, and COMDAT are unsupported");
+        return false;
+      }
+    }
+    return true;
+  }
+
   void reset() {
     // TODO: move to LLVMCompilerBase
     Base::reset();
@@ -103,6 +117,8 @@ struct LLVMCompilerArm64
   void create_helper_call(std::span<IRValueRef> args,
                           ValueRef *result,
                           SymRef sym);
+
+  bool compile_va_arg(const llvm::Instruction *, const ValInfo &, u64);
 
   bool handle_intrin(const llvm::IntrinsicInst *);
 
@@ -538,6 +554,58 @@ void LLVMCompilerArm64<Platform>::create_helper_call(std::span<IRValueRef> args,
 }
 
 template <typename Platform>
+bool LLVMCompilerArm64<Platform>::compile_va_arg(const llvm::Instruction *inst,
+                                                 const ValInfo &,
+                                                 u64) {
+  // Clang emits va_arg for Darwin's stack cursor; for AAPCS64 it expands
+  // accesses to the register-save-area va_list into ordinary LLVM IR.
+  if constexpr (Config::VARARG_REG_SAVE_SIZE != 0) {
+    return false;
+  }
+  auto *ty = inst->getType();
+  if (!(ty->isIntegerTy() || ty->isPointerTy() || ty->isFloatTy() ||
+        ty->isDoubleTy()) ||
+      (ty->isIntegerTy() && ty->getIntegerBitWidth() > 128)) {
+    return false;
+  }
+  auto [list_vr, list] = this->val_ref_single(inst->getOperand(0));
+  auto list_reg = list.load_to_reg();
+  ScratchReg address{this}, next{this};
+  auto ptr = address.alloc_gp();
+  auto end = next.alloc_gp();
+  ASM(LDRxu, ptr, list_reg, 0);
+  auto &dl = this->adaptor->mod->getDataLayout();
+  u32 size = dl.getTypeAllocSize(ty);
+  u32 align = dl.getABITypeAlign(ty).value();
+  if (align > 8) {
+    ASM(ADDxi, ptr, ptr, align - 1);
+    ASM(ANDxi, ptr, ptr, ~(u64{align} - 1));
+  }
+  ASM(ADDxi, end, ptr, tpde::util::align_up(size, 8));
+  ASM(STRxu, end, list_reg, 0);
+  auto result = this->result_ref(inst);
+  if (ty->isFloatTy()) {
+    ASM(LDRsu, result.part(0).alloc_reg(), ptr, 0);
+  } else if (ty->isDoubleTy()) {
+    ASM(LDRdu, result.part(0).alloc_reg(), ptr, 0);
+  } else {
+    auto dst = result.part(0).alloc_reg();
+    switch (size) {
+    case 1: ASM(LDRBu, dst, ptr, 0); break;
+    case 2: ASM(LDRHu, dst, ptr, 0); break;
+    case 4: ASM(LDRwu, dst, ptr, 0); break;
+    case 8: ASM(LDRxu, dst, ptr, 0); break;
+    case 16:
+      ASM(LDRxu, dst, ptr, 0);
+      ASM(LDRxu, result.part(1).alloc_reg(), ptr, 8);
+      break;
+    default: return false;
+    }
+  }
+  return true;
+}
+
+template <typename Platform>
 bool LLVMCompilerArm64<Platform>::handle_intrin(
     const llvm::IntrinsicInst *inst) {
   const auto intrin_id = inst->getIntrinsicID();
@@ -546,10 +614,13 @@ bool LLVMCompilerArm64<Platform>::handle_intrin(
     auto [_, list_ref] = this->val_ref_single(inst->getOperand(0));
     auto list_reg = list_ref.load_to_reg();
     auto tmp_reg = this->permanent_scratch_reg;
-
-    // next stack param
-    ASM(LDRxu, tmp_reg, DA_GP(29), this->reg_save_frame_off + Config::VARARG_REG_SAVE_SIZE);
+    ASM(LDRxu, tmp_reg, DA_GP(29),
+        this->reg_save_frame_off + Config::VARARG_REG_SAVE_SIZE);
     ASM(STRxu, tmp_reg, list_reg, 0);
+    // The stack-only va_list is complete after writing its single pointer.
+    if constexpr (Config::VARARG_REG_SAVE_SIZE == 0) {
+      return true;
+    }
     // gr_top = end of GP arg reg save area
     ASM(ADDxi, tmp_reg, DA_GP(29), this->reg_save_frame_off + 64);
     ASM(STRxu, tmp_reg, list_reg, 8);
@@ -572,11 +643,15 @@ bool LLVMCompilerArm64<Platform>::handle_intrin(
   case llvm::Intrinsic::vacopy: {
     auto [dst_vr, dst_ref] = this->val_ref_single(inst->getOperand(0));
     auto [src_vr, src_ref] = this->val_ref_single(inst->getOperand(1));
-
-    ScratchReg scratch1{this}, scratch2{this};
     const auto src_reg = src_ref.load_to_reg();
     const auto dst_reg = dst_ref.load_to_reg();
-
+    // Copy only the 8-byte cursor, not AAPCS64's 32-byte va_list structure.
+    if constexpr (Config::VARARG_REG_SAVE_SIZE == 0) {
+      ASM(LDRxu, this->permanent_scratch_reg, src_reg, 0);
+      ASM(STRxu, this->permanent_scratch_reg, dst_reg, 0);
+      return true;
+    }
+    ScratchReg scratch1{this}, scratch2{this};
     const auto tmp_reg1 = scratch1.alloc(Config::FP_BANK);
     const auto tmp_reg2 = scratch2.alloc(Config::FP_BANK);
     ASM(LDPq, tmp_reg1, tmp_reg2, src_reg, 0);
@@ -731,15 +806,26 @@ bool LLVMCompilerArm64<Platform>::handle_overflow_intrin_128(
 }
 
 std::unique_ptr<LLVMCompiler> create_compiler(const llvm::Triple &triple) {
-  if (!triple.isOSBinFormatELF()) {
-    return nullptr;
+  switch (triple.getObjectFormat()) {
+  case llvm::Triple::ELF: {
+    auto adaptor = std::make_unique<LLVMAdaptor>(
+        llvm::DataLayout("e-m:e-p270:32:32-p271:32:32-p272:64:64-"
+                         "i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"));
+    return std::make_unique<LLVMCompilerArm64<tpde::a64::PlatformConfig>>(
+        std::move(adaptor));
   }
-
-  llvm::StringRef dl_str = "e-m:e-p270:32:32-p271:32:32-p272:64:64-"
-                           "i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32";
-  auto adaptor = std::make_unique<LLVMAdaptor>(llvm::DataLayout(dl_str));
-  return std::make_unique<LLVMCompilerArm64<tpde::a64::PlatformConfig>>(
-      std::move(adaptor));
+  case llvm::Triple::MachO: {
+    if (!triple.isMacOSX()) {
+      return nullptr;
+    }
+    auto adaptor = std::make_unique<LLVMAdaptor>(
+        llvm::DataLayout("e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:"
+                         "128-n32:64-S128-Fn32"));
+    return std::make_unique<LLVMCompilerArm64<tpde::a64::PlatformConfigDarwin>>(
+        std::move(adaptor));
+  }
+  default: return nullptr;
+  }
 }
 
 } // namespace tpde_llvm::arm64

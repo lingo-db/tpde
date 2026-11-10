@@ -6,6 +6,37 @@ name: CI
 on: [push]
 
 jobs:
+  build-macos-arm64:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        assertions: [ON, OFF]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Verify native runner
+      run: test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64
+    - name: Install dependencies
+      run: |
+        brew install llvm@20 ninja cmake
+        python3 -m venv test-env
+        test-env/bin/pip install lit==20.1.8
+    - name: Configure
+      run: |
+        llvm_prefix=$(brew --prefix llvm@20)
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DCMAKE_C_COMPILER="$llvm_prefix/bin/clang" \
+          -DCMAKE_CXX_COMPILER="$llvm_prefix/bin/clang++" \
+          -DLLVM_DIR="$llvm_prefix/lib/cmake/llvm" \
+          -DTPDE_ENABLE_ASSERTIONS=${{ matrix.assertions }} \
+          -DTPDE_ENABLE_ASAN=OFF -DLIT="$PWD/test-env/bin/lit;--output=$PWD/build/test-results.json"
+    - name: Build and test
+      run: |
+        cmake --build build --target check-tpde --parallel 3
+        python3 -c 'import json; tests = {t["name"]: t["code"] for t in json.load(open("build/test-results.json"))["tests"]}; required = ["TPDE :: macho.tir", "TPDE-LLVM :: macho/interoperability.test"]; assert all(tests.get(name) == "PASS" for name in required), tests'
+
+
   build-llvm19:
     runs-on: ubuntu-latest
     steps:

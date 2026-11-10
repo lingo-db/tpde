@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#include <llvm/ADT/SmallString.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/ExecutionEngine/JITLink/EHFrameSupport.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
@@ -15,6 +16,7 @@
 #endif
 #include <llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Mangler.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IRReader/IRReader.h>
@@ -104,6 +106,15 @@ int main(int argc, char *argv[]) {
 
   std::string triple_str = llvm::sys::getProcessTriple();
   llvm::Triple triple(triple_str);
+  // Only the target's mangling component is needed for symbol lookup.
+  llvm::DataLayout mangling_layout(
+      std::string("e") + llvm::DataLayout::getManglingComponent(triple));
+  const char global_prefix = mangling_layout.getGlobalPrefix();
+  auto mangle = [&](llvm::StringRef name) {
+    llvm::SmallString<128> result;
+    llvm::Mangler::getNameWithPrefix(result, name, mangling_layout);
+    return result;
+  };
 
   if (!orc) {
     auto compiler = tpde_llvm::LLVMCompiler::create(triple);
@@ -111,9 +122,18 @@ int main(int argc, char *argv[]) {
       std::cerr << "Unknown architecture: " << triple_str << "\n";
       return 1;
     }
-    auto mapper = compiler->compile_and_map(*mod, [](std::string_view name) {
-      return ::dlsym(RTLD_DEFAULT, std::string(name).c_str());
-    });
+    auto mapper = compiler->compile_and_map(
+        *mod, [&](std::string_view name) -> void * {
+          // The mapper supplies IR names. Let LLVM handle explicit assembler
+          // names, then apply ORC's process-lookup rule to the linker name.
+          auto linker_name = mangle(llvm::StringRef(name.data(), name.size()));
+          llvm::StringRef process_name = linker_name;
+          if (global_prefix &&
+              !process_name.consume_front(llvm::StringRef(&global_prefix, 1))) {
+            return nullptr;
+          }
+          return ::dlsym(RTLD_DEFAULT, process_name.str().c_str());
+        });
     void *main_addr = mapper.lookup_global(main_fn);
     if (!main_addr) {
       std::cerr << "JIT compilation failed\n";
@@ -132,11 +152,12 @@ int main(int argc, char *argv[]) {
       es, object_layer, std::make_unique<tpde_llvm::OrcCompiler>(triple));
   llvm::orc::JITDylib &dylib = exit_on_err(es.createJITDylib("<main>"));
 
-  // TODO: correct global prefix for MachO/COFF platforms
   dylib.addGenerator(exit_on_err(
       llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-          /*GlobalPrefix=*/'\0')));
+          global_prefix)));
 
+  // ORC discovers IR symbols before TPDE installs its full target data layout.
+  mod->setDataLayout(mangling_layout);
   llvm::orc::ThreadSafeModule tsm(std::move(mod), std::move(context));
   exit_on_err(compile_layer.add(dylib, std::move(tsm)));
 
@@ -148,7 +169,7 @@ int main(int argc, char *argv[]) {
       es, std::make_unique<llvm::jitlink::InProcessEHFrameRegistrar>()));
 #endif
 
-  llvm::orc::ExecutorSymbolDef sym = exit_on_err(es.lookup(&dylib, "main"));
+  llvm::orc::ExecutorSymbolDef sym = exit_on_err(es.lookup(&dylib, mangle("main")));
   uintptr_t main_addr = static_cast<uintptr_t>(sym.getAddress().getValue());
   int ret = ((int (*)(int, char **))main_addr)(0, nullptr);
 

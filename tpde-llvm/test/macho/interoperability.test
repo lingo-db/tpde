@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Contributors to TPDE <https://tpde.org>
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# REQUIRES: native-macho
+# RUN: %python %S/Inputs/interoperability.py %clang %tpde_llc tpde-lli %t
+
+; RUN: tpde-lli %S/../lli/pass-through-results.ll

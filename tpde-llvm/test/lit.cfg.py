@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 import os
+import sys
 import lit.formats
 
 from lit.llvm import llvm_config
@@ -29,5 +30,14 @@ config.available_features.add(f'llvm{config.llvm_version}')
 config.available_features.add(f'os-{config.system_name.lower()}')
 if config.enable_llvm_plugin:
     config.available_features.add("tpde-plugin")
+if "aarch64" in config.tpde_targets:
+    config.available_features.add('tpde-llvm-arm64-darwin')
 
 # TODO(ts): arch config
+
+config.substitutions.append(('%clang', config.clang))
+if "aarch64" in config.tpde_targets and config.system_name == 'Darwin' and config.system_processor in ('arm64', 'aarch64'):
+    config.available_features.add('native-macho')
+
+config.substitutions.append(("%python", sys.executable))
+config.substitutions.append(("%tpde_llc", os.path.join(config.tpde_llvm_bin_dir, "tpde-llc")))

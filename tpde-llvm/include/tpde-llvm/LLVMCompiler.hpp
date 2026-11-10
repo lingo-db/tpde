@@ -40,7 +40,8 @@ public:
   /// module.
   void *lookup_global(llvm::GlobalValue *) const;
 
-  /// Get the range, mapped to memory
+  /// Get the executable mapping range. Depending on the backend, data and
+  /// unwind records may be allocated outside this range.
   std::pair<void *, size_t> get_mapped_range() const;
 
   /// Indicate whether compilation and in-memory mapping was successful.
@@ -70,7 +71,8 @@ public:
 
   /// Compile the module and map it into memory, calling resolver to resolve
   /// references to external symbols. This function will also register unwind
-  /// information. The module might be modified during compilation.
+  /// information. On Mach-O, mapping also runs initializers; destroying the
+  /// mapper runs terminators. The module might be modified during compilation.
   virtual JITMapper
       compile_and_map(llvm::Module &mod,
                       std::function<void *(std::string_view)> resolver) = 0;

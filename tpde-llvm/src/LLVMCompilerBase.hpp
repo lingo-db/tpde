@@ -349,15 +349,14 @@ private:
     return tpde::Assembler::SymBinding::GLOBAL;
   }
 
-  static tpde::elf::AssemblerElf::SymVisibility
-      convert_visibility(const llvm::GlobalValue *gv) {
+  using SymVisibility = typename Config::Assembler::SymVisibility;
+
+  static SymVisibility convert_visibility(const llvm::GlobalValue *gv) {
     switch (gv->getVisibility()) {
-    case llvm::GlobalValue::DefaultVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::DEFAULT;
-    case llvm::GlobalValue::HiddenVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::HIDDEN;
+    case llvm::GlobalValue::DefaultVisibility: return SymVisibility::DEFAULT;
+    case llvm::GlobalValue::HiddenVisibility: return SymVisibility::HIDDEN;
     case llvm::GlobalValue::ProtectedVisibility:
-      return tpde::elf::AssemblerElf::SymVisibility::PROTECTED;
+      return SymVisibility::PROTECTED;
     default: TPDE_UNREACHABLE("invalid global visibility");
     }
   }
@@ -1328,6 +1327,11 @@ typename LLVMCompilerBase<Adaptor, Derived, Config>::SymRef
 
 template <typename Adaptor, typename Derived, typename Config>
 bool LLVMCompilerBase<Adaptor, Derived, Config>::compile(llvm::Module &mod) {
+  if constexpr (requires { derived()->validate_module(mod); }) {
+    if (!derived()->validate_module(mod)) {
+      return false;
+    }
+  }
   if (!this->adaptor->switch_module(mod)) {
     return false;
   }
@@ -1451,6 +1455,9 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::compile_inst(
     res[llvm::Instruction::InsertValue] = {&Derived::compile_insert_value, 0};
     res[llvm::Instruction::LandingPad] = {&Derived::compile_landing_pad, 0};
     res[llvm::Instruction::Freeze] = {&Derived::compile_freeze, 0};
+    if constexpr (requires { &Derived::compile_va_arg; }) {
+      res[llvm::Instruction::VAArg] = {&Derived::compile_va_arg, 0};
+    }
 
     // clang-format on
     return res;
@@ -3809,6 +3816,9 @@ bool LLVMCompilerBase<Adaptor, Derived, Config>::handle_call(
 
   for (u32 i = 0, num_args = call->arg_size(); i != num_args; ++i) {
     using CallArg = typename Derived::CallArg;
+    if (i == call->getFunctionType()->getNumParams()) {
+      cb->start_varargs();
+    }
 
     auto *op = call->getArgOperand(i);
     CallArg arg{op};
